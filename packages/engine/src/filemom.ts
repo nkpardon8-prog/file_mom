@@ -469,6 +469,40 @@ export class FileMom {
     };
   }
 
+  async updateFeatureFlags(flags: { enableVisionEnrichment?: boolean; enableEmbeddings?: boolean }): Promise<void> {
+    if (flags.enableVisionEnrichment !== undefined) {
+      this._config.enableVisionEnrichment = flags.enableVisionEnrichment;
+      if (flags.enableVisionEnrichment && !this._vision) {
+        this._vision = new VisionEnricher({
+          apiKey: this._config.openRouterApiKey,
+          model: this._config.visionModel,
+          maxImageDimension: this._config.visionMaxImageDimension,
+          batchSize: this._config.visionBatchSize,
+          concurrency: 5,
+          retryAttempts: this._config.retryAttempts,
+          retryDelayMs: this._config.retryDelayMs,
+        });
+      } else if (!flags.enableVisionEnrichment) {
+        this._vision = null;
+      }
+    }
+
+    if (flags.enableEmbeddings !== undefined) {
+      this._config.enableEmbeddings = flags.enableEmbeddings;
+      if (flags.enableEmbeddings && !this._embeddings) {
+        this._embeddings = new Embeddings({
+          model: this._config.embeddingModel,
+          dimensions: this._config.embeddingDimensions,
+          dbPath: join(this._config.dataDir, 'index.db'),
+        });
+        await this._embeddings.initialize();
+      } else if (!flags.enableEmbeddings && this._embeddings) {
+        await this._embeddings.close();
+        this._embeddings = null;
+      }
+    }
+  }
+
   // ============================================================
   // Phase 5: Plan (AI Interface)
   // ============================================================

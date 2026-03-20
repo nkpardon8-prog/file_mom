@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import type { FileMom } from '@filemom/engine';
 import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -91,6 +92,16 @@ export async function settingsRoutes(app: FastifyInstance): Promise<void> {
     }
 
     await saveConfig(config);
+
+    // Hot-reload feature flags if they changed
+    const fm = (app as any).fm as FileMom;
+    const flagUpdates: { enableVisionEnrichment?: boolean; enableEmbeddings?: boolean } = {};
+    if (updatedFields.includes('enableVisionEnrichment')) flagUpdates.enableVisionEnrichment = config.enableVisionEnrichment as boolean;
+    if (updatedFields.includes('enableEmbeddings')) flagUpdates.enableEmbeddings = config.enableEmbeddings as boolean;
+    if (Object.keys(flagUpdates).length > 0) {
+      await fm.updateFeatureFlags(flagUpdates);
+    }
+
     return { data: { saved: true, configPath: CONFIG_FILE, updatedFields } };
   });
 
