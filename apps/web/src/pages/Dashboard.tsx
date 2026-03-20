@@ -1,17 +1,22 @@
-import { Files, HardDrive, Clock, FileType2, FolderOpen } from 'lucide-react';
+import { Files, HardDrive, Clock, FileType2, FolderOpen, Sparkles, DollarSign } from 'lucide-react';
 import { toast } from 'sonner';
-import { useStats, useWatcherStatus } from '../hooks/useApi';
+import { useStats, useWatcherStatus, useDescribeStatus, useDescribeBatch, useDescribeCost } from '../hooks/useApi';
 import { useWatchEvents } from '../hooks/useWatchEvents';
 import { StatsCard, StatsCardSkeleton } from '../components/StatsCard';
 import { ScanButton } from '../components/ScanButton';
 import { ActivityFeed } from '../components/ActivityFeed';
-import { formatSize, formatRelativeTime, formatNumber, formatDuration } from '../lib/utils';
+import { formatSize, formatRelativeTime, formatNumber, formatDuration, formatCost } from '../lib/utils';
+import { Download } from 'lucide-react';
 import type { ScanResult } from '../lib/api';
+import { exportDescriptions } from '../lib/api';
 
 export function Dashboard() {
   const { data: stats, isLoading, isError, error } = useStats();
   const { data: watcherStatus } = useWatcherStatus();
   const { events, clearEvents } = useWatchEvents(watcherStatus?.watching ?? false);
+  const { data: describeStatus } = useDescribeStatus();
+  const describeBatch = useDescribeBatch();
+  const { data: describeCost } = useDescribeCost();
 
   const handleScanComplete = (result: ScanResult) => {
     toast.success(`Scan complete — ${formatNumber(result.totalFiles)} files: ${result.newFiles} new, ${result.updatedFiles} updated, ${result.deletedFiles} deleted in ${formatDuration(result.durationMs)}`);
@@ -52,6 +57,25 @@ export function Dashboard() {
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Overview of your indexed files</p>
         </div>
         <div className="flex gap-3">
+          {describeStatus?.enableAIDescriptions && describeStatus.undescribedCount > 0 && (
+            <button
+              onClick={() => {
+                describeBatch.mutate(undefined, {
+                  onSuccess: (result) => {
+                    toast.success(`Described ${result.described} files in ${formatDuration(result.durationMs)} (${formatCost(result.cost)})`);
+                  },
+                  onError: (err) => {
+                    toast.error(`Describe failed — ${err.message}`);
+                  },
+                });
+              }}
+              disabled={describeBatch.isPending}
+              className="inline-flex items-center gap-2 rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-purple-700 disabled:opacity-50 dark:bg-purple-500 dark:hover:bg-purple-600"
+            >
+              <Sparkles className="h-4 w-4" />
+              {describeBatch.isPending ? 'Describing...' : `Describe All (${describeStatus.undescribedCount})`}
+            </button>
+          )}
           <ScanButton fullRescan onScanComplete={handleScanComplete} onScanError={handleScanError} />
           <ScanButton onScanComplete={handleScanComplete} onScanError={handleScanError} />
         </div>
@@ -68,7 +92,7 @@ export function Dashboard() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className={`grid grid-cols-1 gap-4 sm:grid-cols-2 ${describeStatus?.enableAIDescriptions ? (describeCost && describeCost.cost > 0 ? 'lg:grid-cols-3 xl:grid-cols-6' : 'lg:grid-cols-5') : 'lg:grid-cols-4'}`}>
         {isLoading ? (
           <><StatsCardSkeleton /><StatsCardSkeleton /><StatsCardSkeleton /><StatsCardSkeleton /></>
         ) : stats ? (
@@ -77,9 +101,44 @@ export function Dashboard() {
             <StatsCard title="Total Size" value={formatSize(stats.totalSize)} icon={HardDrive} />
             <StatsCard title="Last Scan" value={formatRelativeTime(stats.lastScanAt)} icon={Clock} />
             <StatsCard title="File Types" value={String(extensionCount)} subtitle={extensionCount === 1 ? 'extension' : 'extensions'} icon={FileType2} />
+            {describeStatus?.enableAIDescriptions && (
+              <StatsCard
+                title="AI Described"
+                value={`${formatNumber(stats.totalFiles - (describeStatus?.undescribedCount ?? 0))}/${formatNumber(stats.totalFiles)}`}
+                subtitle="files"
+                icon={Sparkles}
+              />
+            )}
+            {describeStatus?.enableAIDescriptions && describeCost && describeCost.cost > 0 && (
+              <StatsCard title="AI Cost" value={formatCost(describeCost.cost)} icon={DollarSign} />
+            )}
           </>
         ) : null}
       </div>
+
+      {describeStatus?.enableAIDescriptions && stats && stats.totalFiles > 0 && stats.totalFiles > (describeStatus?.undescribedCount ?? 0) && (
+        <div className="flex justify-end">
+          <button
+            onClick={async () => {
+              try {
+                const data = await exportDescriptions();
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = 'filemom-descriptions.json'; a.click();
+                URL.revokeObjectURL(url);
+                toast.success(`Exported ${data.length} descriptions`);
+              } catch (err) {
+                toast.error(`Export failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+              }
+            }}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+          >
+            <Download className="h-3.5 w-3.5" />
+            Export Descriptions (JSON)
+          </button>
+        </div>
+      )}
 
       {stats && !isEmpty && (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">

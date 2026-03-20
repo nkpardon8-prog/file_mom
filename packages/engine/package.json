@@ -28,6 +28,7 @@
     "p-retry": "^6.2.0",
     "sharp": "^0.33.0",
     "unpdf": "^0.12.0",
+    "xlsx": "^0.18.5",
     "sqlite-vec": "^0.1.7",
     "@huggingface/transformers": "^3.0.0",
     "xxhash-wasm": "^1.1.0",

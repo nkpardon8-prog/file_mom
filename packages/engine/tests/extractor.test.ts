@@ -30,6 +30,17 @@ vi.mock('file-type', () => ({
   fileTypeFromFile: vi.fn().mockResolvedValue(null),
 }));
 
+const mockReadFile = vi.fn();
+const mockSheetToJson = vi.fn();
+const mockDecodeRange = vi.fn();
+vi.mock('xlsx', () => ({
+  readFile: (...args: unknown[]) => mockReadFile(...args),
+  utils: {
+    sheet_to_json: (...args: unknown[]) => mockSheetToJson(...args),
+    decode_range: (...args: unknown[]) => mockDecodeRange(...args),
+  },
+}));
+
 // Import after mocks are set up
 import exifr from 'exifr';
 import mammoth from 'mammoth';
@@ -602,6 +613,184 @@ describe('Audio extraction', () => {
 // ============================================================
 // MIME-type detection tests
 // ============================================================
+
+// ============================================================
+// Spreadsheet extraction tests
+// ============================================================
+
+describe('Spreadsheet extraction', () => {
+  function setupXlsxMock(sheets: Record<string, { rows: unknown[][]; fullRef?: string }>) {
+    const sheetNames = Object.keys(sheets);
+    const sheetsObj: Record<string, Record<string, unknown>> = {};
+    for (const [name, data] of Object.entries(sheets)) {
+      sheetsObj[name] = data.fullRef ? { '!fullref': data.fullRef } : {};
+    }
+
+    mockReadFile.mockReturnValue({ SheetNames: sheetNames, Sheets: sheetsObj });
+    mockSheetToJson.mockImplementation((_sheet: unknown, _opts?: unknown) => {
+      // Find which sheet was passed by matching the object reference
+      for (const [name, sheetObj] of Object.entries(sheetsObj)) {
+        if (_sheet === sheetObj) return sheets[name].rows;
+      }
+      return [];
+    });
+    mockDecodeRange.mockImplementation((ref: string) => {
+      // Parse "A1:D156" style refs
+      const match = ref.match(/:([A-Z]+)(\d+)$/);
+      return { e: { r: match ? parseInt(match[2], 10) - 1 : 0 } };
+    });
+  }
+
+  it('extracts text from XLSX with 2 sheets', async () => {
+    const filePath = join(tempDir, 'report.xlsx');
+    await writeFile(filePath, 'fake xlsx');
+
+    setupXlsxMock({
+      Expenses: {
+        rows: [
+          ['Date', 'Description', 'Amount', 'Category'],
+          ['2024-01-03', 'Whole Foods', 67.42, 'Groceries'],
+          ['2024-01-05', 'Electric Co', 145.0, 'Utilities'],
+        ],
+        fullRef: 'A1:D156',
+      },
+      Summary: {
+        rows: [
+          ['Category', 'Total'],
+          ['Groceries', 523.18],
+        ],
+        fullRef: 'A1:B10',
+      },
+    });
+
+    const extractor = new Extractor(defaultConfig);
+    const result = await extractor.extract(filePath);
+
+    expect(result.extractedText).toContain('Sheet: Expenses (156 rows)');
+    expect(result.extractedText).toContain('Columns: Date, Description, Amount, Category');
+    expect(result.extractedText).toContain('Whole Foods');
+    expect(result.extractedText).toContain('Sheet: Summary (10 rows)');
+    expect(result.extractedText).toContain('Columns: Category, Total');
+    expect(result.extractionError).toBeNull();
+  });
+
+  it('extracts text from CSV (single sheet)', async () => {
+    const filePath = join(tempDir, 'data.csv');
+    await writeFile(filePath, 'fake csv');
+
+    setupXlsxMock({
+      Sheet1: {
+        rows: [
+          ['Name', 'Email', 'Role'],
+          ['Alice', 'alice@co.com', 'Engineer'],
+          ['Bob', 'bob@co.com', 'Designer'],
+        ],
+      },
+    });
+
+    const extractor = new Extractor(defaultConfig);
+    const result = await extractor.extract(filePath);
+
+    expect(result.extractedText).toContain('Sheet: Sheet1');
+    expect(result.extractedText).toContain('Columns: Name, Email, Role');
+    expect(result.extractedText).toContain('Alice');
+  });
+
+  it('truncates to maxTextLength', async () => {
+    const filePath = join(tempDir, 'big.xlsx');
+    await writeFile(filePath, 'fake xlsx');
+
+    const rows: unknown[][] = [['Col1', 'Col2', 'Col3']];
+    for (let i = 0; i < 15; i++) {
+      rows.push(['A'.repeat(50), 'B'.repeat(50), 'C'.repeat(50)]);
+    }
+    setupXlsxMock({ Sheet1: { rows } });
+
+    const extractor = new Extractor({ ...defaultConfig, maxTextLength: 100 });
+    const result = await extractor.extract(filePath);
+
+    expect(result.extractedText).not.toBeNull();
+    expect(result.extractedText!.length).toBeLessThanOrEqual(100);
+  });
+
+  it('returns null for empty spreadsheet', async () => {
+    const filePath = join(tempDir, 'empty.xlsx');
+    await writeFile(filePath, 'fake xlsx');
+
+    setupXlsxMock({ Sheet1: { rows: [] } });
+
+    const extractor = new Extractor(defaultConfig);
+    const result = await extractor.extract(filePath);
+
+    expect(result.extractedText).toBeNull();
+  });
+
+  it('returns null for whitespace-only headers', async () => {
+    const filePath = join(tempDir, 'blank.xlsx');
+    await writeFile(filePath, 'fake xlsx');
+
+    setupXlsxMock({ Sheet1: { rows: [['', '  ', '']] } });
+
+    const extractor = new Extractor(defaultConfig);
+    const result = await extractor.extract(filePath);
+
+    expect(result.extractedText).toBeNull();
+  });
+
+  it('handles corrupt file gracefully', async () => {
+    const filePath = join(tempDir, 'corrupt.xlsx');
+    await writeFile(filePath, 'not a real xlsx');
+
+    mockReadFile.mockImplementation(() => { throw new Error('File is corrupt'); });
+
+    const extractor = new Extractor(defaultConfig);
+    const result = await extractor.extract(filePath);
+
+    expect(result.extractedText).toBeNull();
+    expect(result.extractionError).toBeNull();
+    expect(result.quickHash).toMatch(/^[0-9a-f]{16}-/);
+  });
+
+  it('processes all spreadsheet extensions', async () => {
+    const spreadsheetExts = ['xlsx', 'xls', 'xlsm', 'csv', 'tsv', 'ods'];
+
+    setupXlsxMock({
+      Sheet1: { rows: [['Header'], ['Data']] },
+    });
+
+    const extractor = new Extractor(defaultConfig);
+
+    for (const ext of spreadsheetExts) {
+      mockReadFile.mockClear();
+      setupXlsxMock({ Sheet1: { rows: [['Header'], ['Data']] } });
+      const filePath = join(tempDir, `test.${ext}`);
+      await writeFile(filePath, `fake ${ext} data`);
+
+      const result = await extractor.extract(filePath);
+      expect(mockReadFile).toHaveBeenCalled();
+      expect(result.extractedText).toContain('Header');
+    }
+  });
+
+  it('routes by MIME type for spreadsheet', async () => {
+    const filePath = join(tempDir, 'misnamed.dat');
+    await writeFile(filePath, 'fake xlsx data');
+
+    vi.mocked(fileTypeFromFile).mockResolvedValue({
+      ext: 'xlsx',
+      mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    } as any);
+    setupXlsxMock({ Sheet1: { rows: [['A'], ['B']] } });
+
+    const extractor = new Extractor(defaultConfig);
+    const result = await extractor.extract(filePath);
+
+    expect(result.extractedText).toContain('Sheet: Sheet1');
+    expect(result.detectedMimeType).toBe(
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+  });
+});
 
 describe('MIME-type detection', () => {
   it('routes by MIME type when file-type detects it', async () => {

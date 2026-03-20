@@ -12,7 +12,13 @@ vi.mock('../src/lib/api', () => ({
     oldestFile: '2024-01-01T00:00:00.000Z', newestFile: '2026-03-19T00:00:00.000Z',
     lastScanAt: '2026-03-19T11:00:00.000Z', watchedFolders: [],
   }),
-  fetchSearchResults: vi.fn(),
+  fetchBrowseResults: vi.fn().mockResolvedValue([]),
+  fetchFilterOptions: vi.fn().mockResolvedValue({
+    categories: [{ value: 'financial', count: 10 }],
+    contentTypes: [{ value: 'document', count: 8 }],
+    sources: [],
+    dateContexts: [],
+  }),
   fetchFile: vi.fn(),
   fetchSettings: vi.fn().mockResolvedValue({ enableEmbeddings: false, hasApiKey: true, configPath: '/test' }),
   ApiError: class extends Error {
@@ -20,8 +26,8 @@ vi.mock('../src/lib/api', () => ({
   },
 }));
 
-import { fetchSearchResults, fetchFile } from '../src/lib/api';
-const mockSearch = vi.mocked(fetchSearchResults);
+import { fetchBrowseResults, fetchFile } from '../src/lib/api';
+const mockBrowse = vi.mocked(fetchBrowseResults);
 const mockFetchFile = vi.mocked(fetchFile);
 
 function renderSearch() {
@@ -37,17 +43,12 @@ function renderSearch() {
 
 beforeEach(() => vi.clearAllMocks());
 
-const mockResults = [
-  { id: 1, path: '/docs/report.pdf', name: 'report.pdf', extension: 'pdf', size: 12345, mtime: 1710800000000, score: -3.5, snippet: 'quarterly revenue report' },
-  { id: 2, path: '/docs/notes.txt', name: 'notes.txt', extension: 'txt', size: 567, mtime: 1710900000000, score: -2.1, snippet: 'meeting notes' },
+const mockBrowseResults = [
+  { id: 1, path: '/docs/report.pdf', name: 'report.pdf', extension: 'pdf', size: 12345, mtime: 1710800000000, score: -3.5, snippet: 'quarterly revenue report', aiDescription: 'Quarterly revenue report Q4', aiCategory: 'financial', aiSubcategory: 'report', aiTags: '["revenue","Q4"]', aiContentType: 'document', aiConfidence: 0.9, aiSensitive: false },
+  { id: 2, path: '/docs/notes.txt', name: 'notes.txt', extension: 'txt', size: 567, mtime: 1710900000000, score: -2.1, snippet: 'meeting notes', aiDescription: 'Meeting notes from standup', aiCategory: 'work', aiSubcategory: 'notes', aiTags: '["meeting"]', aiContentType: 'document', aiConfidence: 0.85, aiSensitive: false },
 ];
 
 describe('Search Page', () => {
-  it('shows initial state with search prompt', () => {
-    renderSearch();
-    expect(screen.getByText('Enter a search query to find files')).toBeInTheDocument();
-  });
-
   it('renders search input', () => {
     renderSearch();
     expect(screen.getByPlaceholderText('Search files...')).toBeInTheDocument();
@@ -67,12 +68,17 @@ describe('Search Page', () => {
     expect(screen.getByDisplayValue('20 results')).toBeInTheDocument();
   });
 
-  it('displays results after search', async () => {
-    mockSearch.mockResolvedValue(mockResults);
+  it('renders filter dropdowns from filterOptions', async () => {
     renderSearch();
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('All Categories')).toBeInTheDocument();
+      expect(screen.getByDisplayValue('All Types')).toBeInTheDocument();
+    });
+  });
 
-    const input = screen.getByPlaceholderText('Search files...');
-    fireEvent.change(input, { target: { value: 'report' } });
+  it('displays browse results', async () => {
+    mockBrowse.mockResolvedValue(mockBrowseResults);
+    renderSearch();
 
     await waitFor(() => {
       expect(screen.getByText('report.pdf')).toBeInTheDocument();
@@ -82,51 +88,28 @@ describe('Search Page', () => {
     expect(screen.getByText('2 results')).toBeInTheDocument();
   });
 
-  it('shows empty state for no results', async () => {
-    mockSearch.mockResolvedValue([]);
+  it('shows AI description and category in results', async () => {
+    mockBrowse.mockResolvedValue(mockBrowseResults);
     renderSearch();
 
-    fireEvent.change(screen.getByPlaceholderText('Search files...'), { target: { value: 'nonexistent' } });
-
     await waitFor(() => {
-      expect(screen.getByText(/No results found/)).toBeInTheDocument();
+      expect(screen.getByText('Quarterly revenue report Q4')).toBeInTheDocument();
+      expect(screen.getByText('financial')).toBeInTheDocument();
+      expect(screen.getByText('work')).toBeInTheDocument();
     });
   });
 
-  it('shows error on search failure', async () => {
-    mockSearch.mockRejectedValue(new Error('Search failed'));
+  it('shows error on browse failure', async () => {
+    mockBrowse.mockRejectedValue(new Error('Search failed'));
     renderSearch();
-
-    fireEvent.change(screen.getByPlaceholderText('Search files...'), { target: { value: 'broken' } });
 
     await waitFor(() => {
       expect(screen.getByText(/Search failed/)).toBeInTheDocument();
     });
   });
 
-  it('clears search with X button', async () => {
-    mockSearch.mockResolvedValue(mockResults);
-    renderSearch();
-
-    const input = screen.getByPlaceholderText('Search files...');
-    fireEvent.change(input, { target: { value: 'test' } });
-
-    await waitFor(() => {
-      expect(screen.getByText('report.pdf')).toBeInTheDocument();
-    });
-
-    // Click clear
-    const clearButtons = screen.getAllByRole('button');
-    const clearButton = clearButtons.find((b) => b.querySelector('.lucide-x'));
-    if (clearButton) fireEvent.click(clearButton);
-
-    await waitFor(() => {
-      expect(screen.getByText('Enter a search query to find files')).toBeInTheDocument();
-    });
-  });
-
   it('opens file detail panel on row click', async () => {
-    mockSearch.mockResolvedValue(mockResults);
+    mockBrowse.mockResolvedValue(mockBrowseResults);
     mockFetchFile.mockResolvedValue({
       id: 1, path: '/docs/report.pdf', name: 'report.pdf', extension: 'pdf',
       size: 12345, mtime: 1710800000000, ctime: 1710800000000,
@@ -134,17 +117,18 @@ describe('Search Page', () => {
       exifJson: null, detectedMimeType: 'application/pdf', indexedAt: 1710800000000,
       embeddingId: null, visionDescription: null, visionCategory: null,
       visionTags: null, enrichedAt: null,
+      aiDescription: null, aiCategory: null, aiSubcategory: null, aiTags: null,
+      aiDateContext: null, aiSource: null, aiContentType: null, aiConfidence: null,
+      aiSensitive: null, aiSensitiveType: null, aiDetails: null, aiDescribedAt: null,
+      aiDescriptionModel: null,
     });
 
     renderSearch();
-
-    fireEvent.change(screen.getByPlaceholderText('Search files...'), { target: { value: 'report' } });
 
     await waitFor(() => {
       expect(screen.getByText('report.pdf')).toBeInTheDocument();
     });
 
-    // Click the result row
     fireEvent.click(screen.getByText('report.pdf'));
 
     await waitFor(() => {
@@ -153,11 +137,9 @@ describe('Search Page', () => {
     });
   });
 
-  it('shows snippet below file name', async () => {
-    mockSearch.mockResolvedValue(mockResults);
+  it('shows snippet below file name in results', async () => {
+    mockBrowse.mockResolvedValue(mockBrowseResults);
     renderSearch();
-
-    fireEvent.change(screen.getByPlaceholderText('Search files...'), { target: { value: 'report' } });
 
     await waitFor(() => {
       expect(screen.getByText('quarterly revenue report')).toBeInTheDocument();
@@ -170,5 +152,10 @@ describe('Search Page', () => {
       const semanticBtn = screen.getByText('Semantic');
       expect(semanticBtn).toBeDisabled();
     });
+  });
+
+  it('renders sensitive filter toggle', () => {
+    renderSearch();
+    expect(screen.getByText('Sensitive')).toBeInTheDocument();
   });
 });

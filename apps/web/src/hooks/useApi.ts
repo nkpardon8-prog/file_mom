@@ -5,6 +5,11 @@ import {
   fetchEnrichStatus, triggerEnrichBatch, triggerEnrichFile, triggerEmbed,
   updateSettings, addWatchedFolder, removeWatchedFolder, testApiKey,
   watcherStart, watcherStop, fetchWatcherStatus,
+  fetchDescribeStatus, triggerDescribeBatch, triggerDescribeFile, fetchDescribeCost,
+  fetchBrowseResults, fetchFilterOptions, type BrowseParams,
+  fetchFolders, moveFile, copyFile, renameFile, deleteFile,
+  smartFolderAsk, smartFolderPreview, smartFolderCreate,
+  type SmartFolderMessage, type SmartFolderCriteria,
   type ScanParams, type SearchParams, type GeneratePlanParams, type RefinePlanParams, type ExecutePlanParams,
   type SettingsData,
 } from '../lib/api';
@@ -17,6 +22,10 @@ export const queryKeys = {
   settings: ['settings'] as const,
   undoBatches: ['undoBatches'] as const,
   enrichStatus: ['enrichStatus'] as const,
+  describeStatus: ['describeStatus'] as const,
+  browse: (params: BrowseParams) => ['browse', params] as const,
+  filterOptions: ['filterOptions'] as const,
+  folders: ['folders'] as const,
   watcherStatus: ['watcherStatus'] as const,
 };
 
@@ -32,7 +41,12 @@ export function useScan() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (params?: ScanParams) => triggerScan(params),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: queryKeys.stats }); },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.stats });
+      queryClient.invalidateQueries({ queryKey: queryKeys.folders });
+      queryClient.invalidateQueries({ queryKey: queryKeys.filterOptions });
+      queryClient.invalidateQueries({ queryKey: ['browse'] });
+    },
   });
 }
 
@@ -125,6 +139,145 @@ export function useEmbed() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.enrichStatus });
       queryClient.invalidateQueries({ queryKey: queryKeys.stats });
+    },
+  });
+}
+
+export function useDescribeStatus() {
+  return useQuery({
+    queryKey: queryKeys.describeStatus,
+    queryFn: fetchDescribeStatus,
+    staleTime: 30_000,
+  });
+}
+
+export function useDescribeBatch() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (params?: { limit?: number }) => triggerDescribeBatch(params),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.describeStatus });
+      queryClient.invalidateQueries({ queryKey: queryKeys.stats });
+      queryClient.invalidateQueries({ queryKey: ['describeCost'] });
+      queryClient.invalidateQueries({ queryKey: ['browse'] });
+    },
+  });
+}
+
+export function useDescribeCost() {
+  return useQuery({
+    queryKey: ['describeCost'] as const,
+    queryFn: fetchDescribeCost,
+    staleTime: 30_000,
+  });
+}
+
+export function useDescribeFile() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (path: string) => triggerDescribeFile(path),
+    onSuccess: (_data, path) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.file(path) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.describeStatus });
+    },
+  });
+}
+
+export function useBrowse(params: BrowseParams) {
+  return useQuery({
+    queryKey: queryKeys.browse(params),
+    queryFn: () => fetchBrowseResults(params),
+    staleTime: 10_000,
+  });
+}
+
+export function useFilterOptions() {
+  return useQuery({
+    queryKey: queryKeys.filterOptions,
+    queryFn: fetchFilterOptions,
+    staleTime: 60_000,
+  });
+}
+
+export function useFolders() {
+  return useQuery({
+    queryKey: queryKeys.folders,
+    queryFn: fetchFolders,
+    staleTime: 30_000,
+  });
+}
+
+export function useMoveFile() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ source, destination }: { source: string; destination: string }) => moveFile(source, destination),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.folders });
+      queryClient.invalidateQueries({ queryKey: queryKeys.stats });
+      queryClient.invalidateQueries({ queryKey: ['browse'] });
+    },
+  });
+}
+
+export function useCopyFile() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ source, destination }: { source: string; destination: string }) => copyFile(source, destination),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.folders });
+      queryClient.invalidateQueries({ queryKey: queryKeys.stats });
+      queryClient.invalidateQueries({ queryKey: ['browse'] });
+    },
+  });
+}
+
+export function useRenameFile() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ path, newName }: { path: string; newName: string }) => renameFile(path, newName),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.folders });
+      queryClient.invalidateQueries({ queryKey: queryKeys.stats });
+      queryClient.invalidateQueries({ queryKey: ['browse'] });
+    },
+  });
+}
+
+export function useDeleteFile() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (path: string) => deleteFile(path),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.folders });
+      queryClient.invalidateQueries({ queryKey: queryKeys.stats });
+      queryClient.invalidateQueries({ queryKey: ['browse'] });
+    },
+  });
+}
+
+export function useSmartFolderAsk() {
+  return useMutation({
+    mutationFn: (params: { folderName: string; description: string; messages: SmartFolderMessage[] }) =>
+      smartFolderAsk(params.folderName, params.description, params.messages),
+  });
+}
+
+export function useSmartFolderPreview() {
+  return useMutation({
+    mutationFn: (criteria: SmartFolderCriteria) => smartFolderPreview(criteria),
+  });
+}
+
+export function useSmartFolderCreate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { folderPath: string; filePaths: string[] }) =>
+      smartFolderCreate(params.folderPath, params.filePaths),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.folders });
+      queryClient.invalidateQueries({ queryKey: queryKeys.stats });
+      queryClient.invalidateQueries({ queryKey: queryKeys.undoBatches });
+      queryClient.invalidateQueries({ queryKey: ['browse'] });
     },
   });
 }

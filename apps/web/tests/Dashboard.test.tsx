@@ -9,6 +9,10 @@ vi.mock('../src/lib/api', () => ({
   fetchStats: vi.fn(),
   triggerScan: vi.fn(),
   fetchWatcherStatus: vi.fn().mockResolvedValue({ watching: false, clients: 0 }),
+  fetchDescribeStatus: vi.fn().mockResolvedValue({ undescribedCount: 0, enableAIDescriptions: false }),
+  fetchDescribeCost: vi.fn().mockResolvedValue({ cost: 0 }),
+  triggerDescribeBatch: vi.fn(),
+  exportDescriptions: vi.fn().mockResolvedValue([]),
   ApiError: class extends Error {
     constructor(message: string, public status: number, public code?: string) { super(message); }
   },

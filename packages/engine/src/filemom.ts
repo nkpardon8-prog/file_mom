@@ -1,4 +1,5 @@
-import { join, basename, extname } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { join, basename, extname, dirname } from 'node:path';
 import { mkdir, rm, rmdir, stat } from 'node:fs/promises';
 import { Scanner } from './scanner.js';
 import { Extractor } from './extractor.js';
@@ -9,6 +10,7 @@ import { Executor } from './executor.js';
 import { TransactionLog } from './transaction.js';
 import { Watcher } from './watcher.js';
 import { Embeddings } from './embeddings.js';
+import { Describer, type DescriptionFields } from './describer.js';
 import { safeCopy, pathExists } from './utils/fs.js';
 import { AIError, EmbeddingError } from './errors.js';
 import { ConfigSchema } from './config.js';
@@ -27,6 +29,14 @@ import type {
   ScanResult,
   SearchOptions,
   SearchResult,
+  BrowseOptions,
+  BrowseResult,
+  FilterOptions,
+  FolderInfo,
+  SmartFolderMessage,
+  SmartFolderResponse,
+  SmartFolderCriteria,
+  Action,
   PlanOptions,
   RefinePlanOptions,
   ExecuteOptions,
@@ -35,6 +45,7 @@ import type {
   SemanticSearchOptions,
   HybridSearchResult,
   EmbeddingResult,
+  DescriptionResult,
 } from './types.js';
 
 export class FileMom {
@@ -47,6 +58,7 @@ export class FileMom {
   private _txLog: TransactionLog;
   private _watcher: Watcher | null = null;
   private _embeddings: Embeddings | null = null;
+  private _describer: Describer | null = null;
   private _lastExpansion: QueryExpansion | null = null;
   private _config: FileMomConfig;
 
@@ -88,6 +100,18 @@ export class FileMom {
           concurrency: 5,
           retryAttempts: this._config.retryAttempts,
           retryDelayMs: this._config.retryDelayMs,
+        })
+      : null;
+
+    this._describer = this._config.enableAIDescriptions
+      ? new Describer({
+          apiKey: this._config.openRouterApiKey,
+          visionModel: this._config.visionModel,
+          textModel: this._config.descriptionModel,
+          concurrency: this._config.descriptionMaxConcurrent,
+          retryAttempts: this._config.retryAttempts,
+          retryDelayMs: this._config.retryDelayMs,
+          maxImageDimension: this._config.visionMaxImageDimension,
         })
       : null;
 
@@ -216,6 +240,167 @@ export class FileMom {
 
   async search(query: string, options?: SearchOptions): Promise<SearchResult[]> {
     return this._indexer.search(query, options);
+  }
+
+  async browseFiles(options?: BrowseOptions): Promise<BrowseResult[]> {
+    return this._indexer.browseFiles(options);
+  }
+
+  async getFilterOptions(): Promise<FilterOptions> {
+    return this._indexer.getFilterOptions();
+  }
+
+  async exportDescriptions(): Promise<FileRecord[]> {
+    return this._indexer.exportDescriptions();
+  }
+
+  async getFolders(): Promise<FolderInfo[]> {
+    return this._indexer.getFolders();
+  }
+
+  // ============================================================
+  // File Operations (single-file, uses Executor + TransactionLog)
+  // ============================================================
+
+  async moveFile(source: string, destination: string): Promise<{ success: boolean; transactionId: number | null }> {
+    const plan: ActionPlan = {
+      intent: `Move ${basename(source)}`,
+      actions: [{ id: randomUUID(), type: 'move_file', source, destination, reason: 'User move', confidence: 1.0 }],
+      needsReview: [],
+      summary: { filesAffected: 1, foldersCreated: 0, totalSizeBytes: 0 },
+      warnings: [],
+    };
+    const result = await this._executor.execute(plan);
+    const actionResult = result.results[0];
+
+    if (actionResult?.success) {
+      const actualDest = actionResult.transactionId
+        ? this._txLog.getTransaction(actionResult.transactionId)?.destPath ?? destination
+        : destination;
+      const record = await this._indexer.getByPath(source);
+      if (record) {
+        await this._indexer.deleteFile(source);
+        await this._indexer.upsertFile({ ...record, path: actualDest, name: basename(actualDest), indexedAt: Date.now() });
+      }
+    }
+    return { success: actionResult?.success ?? false, transactionId: actionResult?.transactionId ?? null };
+  }
+
+  async copyFile(source: string, destination: string): Promise<{ success: boolean; transactionId: number | null }> {
+    const plan: ActionPlan = {
+      intent: `Copy ${basename(source)}`,
+      actions: [{ id: randomUUID(), type: 'copy_file', source, destination, reason: 'User copy', confidence: 1.0 }],
+      needsReview: [],
+      summary: { filesAffected: 1, foldersCreated: 0, totalSizeBytes: 0 },
+      warnings: [],
+    };
+    const result = await this._executor.execute(plan);
+    const actionResult = result.results[0];
+
+    if (actionResult?.success) {
+      const actualDest = actionResult.transactionId
+        ? this._txLog.getTransaction(actionResult.transactionId)?.destPath ?? destination
+        : destination;
+      // Re-scan the copy to add it to the index
+      const srcRecord = await this._indexer.getByPath(source);
+      if (srcRecord) {
+        await this._indexer.upsertFile({ ...srcRecord, id: 0, path: actualDest, name: basename(actualDest), indexedAt: Date.now() });
+      }
+    }
+    return { success: actionResult?.success ?? false, transactionId: actionResult?.transactionId ?? null };
+  }
+
+  async renameFile(filePath: string, newName: string): Promise<{ success: boolean; transactionId: number | null }> {
+    const destination = join(dirname(filePath), newName);
+    const plan: ActionPlan = {
+      intent: `Rename ${basename(filePath)} to ${newName}`,
+      actions: [{ id: randomUUID(), type: 'rename_file', source: filePath, destination, reason: 'User rename', confidence: 1.0 }],
+      needsReview: [],
+      summary: { filesAffected: 1, foldersCreated: 0, totalSizeBytes: 0 },
+      warnings: [],
+    };
+    const result = await this._executor.execute(plan);
+    const actionResult = result.results[0];
+
+    if (actionResult?.success) {
+      const actualDest = actionResult.transactionId
+        ? this._txLog.getTransaction(actionResult.transactionId)?.destPath ?? destination
+        : destination;
+      const record = await this._indexer.getByPath(filePath);
+      if (record) {
+        await this._indexer.deleteFile(filePath);
+        await this._indexer.upsertFile({ ...record, path: actualDest, name: basename(actualDest), extension: extname(actualDest).slice(1).toLowerCase(), indexedAt: Date.now() });
+      }
+    }
+    return { success: actionResult?.success ?? false, transactionId: actionResult?.transactionId ?? null };
+  }
+
+  async deleteFile(filePath: string): Promise<{ success: boolean }> {
+    try {
+      await rm(filePath);
+      await this._indexer.deleteFile(filePath);
+      return { success: true };
+    } catch {
+      return { success: false };
+    }
+  }
+
+  // ============================================================
+  // Smart Folder Creation
+  // ============================================================
+
+  async smartFolderAsk(
+    folderName: string,
+    description: string,
+    messages: SmartFolderMessage[],
+  ): Promise<SmartFolderResponse> {
+    const response = await this._ai.smartFolderConverse(folderName, description, messages);
+
+    if (response.done && response.criteria) {
+      const browseOpts: BrowseOptions = { ...response.criteria, limit: 200 };
+      const matches = await this._indexer.browseFiles(browseOpts);
+      response.matchCount = matches.length;
+    }
+
+    return response;
+  }
+
+  async smartFolderPreview(criteria: SmartFolderCriteria): Promise<BrowseResult[]> {
+    return this._indexer.browseFiles({ ...criteria, limit: 200 });
+  }
+
+  async smartFolderCreate(
+    folderPath: string,
+    filePaths: string[],
+  ): Promise<ExecutionResult> {
+    const actions: Action[] = [
+      {
+        id: randomUUID(),
+        type: 'create_folder',
+        source: folderPath,
+        destination: folderPath,
+        reason: 'Smart folder creation',
+        confidence: 1.0,
+      },
+      ...filePaths.map((fp) => ({
+        id: randomUUID(),
+        type: 'move_file' as const,
+        source: fp,
+        destination: join(folderPath, basename(fp)),
+        reason: 'Smart folder auto-sort',
+        confidence: 1.0,
+      })),
+    ];
+
+    const plan: ActionPlan = {
+      intent: `Create smart folder: ${basename(folderPath)}`,
+      actions,
+      needsReview: [],
+      summary: { filesAffected: filePaths.length, foldersCreated: 1, totalSizeBytes: 0 },
+      warnings: [],
+    };
+
+    return this.execute(plan);
   }
 
   async getStats(): Promise<IndexStats> {
@@ -377,6 +562,72 @@ export class FileMom {
   }
 
   // ============================================================
+  // Phase V2-4: AI Descriptions
+  // ============================================================
+
+  async describeFiles(options?: {
+    limit?: number;
+    onProgress?: (done: number, total: number) => void;
+  }): Promise<DescriptionResult> {
+    if (!this._describer) {
+      throw new AIError('AI descriptions not enabled. Set enableAIDescriptions: true in config.');
+    }
+
+    const start = Date.now();
+    const limit = options?.limit ?? this._config.descriptionBatchSize;
+    const undescribed = await this._indexer.getUndescribed({ limit });
+
+    if (undescribed.length === 0) {
+      return { described: 0, skipped: 0, errors: [], cost: 0, durationMs: 0 };
+    }
+
+    const results = await this._describer.describeBatch(undescribed, options?.onProgress);
+    const errors: Array<{ path: string; error: string }> = [];
+    let described = 0;
+
+    for (const file of undescribed) {
+      const result = results.get(file.path);
+      if (result) {
+        await this._indexer.upsertFile({ ...file, ...result });
+        described++;
+      } else {
+        errors.push({ path: file.path, error: 'AI description failed' });
+      }
+    }
+
+    return {
+      described,
+      skipped: undescribed.length - described - errors.length,
+      errors,
+      cost: this._describer.getCost(),
+      durationMs: Date.now() - start,
+    };
+  }
+
+  async describeFile(path: string): Promise<DescriptionFields> {
+    if (!this._describer) {
+      throw new AIError('AI descriptions not enabled. Set enableAIDescriptions: true in config.');
+    }
+
+    const record = await this._indexer.getByPath(path);
+    if (!record) {
+      throw new AIError(`File not found in index: ${path}`);
+    }
+
+    const result = await this._describer.describeFile(record);
+    await this._indexer.upsertFile({ ...record, ...result });
+    return result;
+  }
+
+  async getUndescribedCount(): Promise<number> {
+    return this._indexer.getUndescribedCount();
+  }
+
+  getDescriptionCost(): number {
+    return this._describer?.getCost() ?? 0;
+  }
+
+  // ============================================================
   // Phase 1.5: Vision Enrichment
   // ============================================================
 
@@ -462,14 +713,15 @@ export class FileMom {
     return this._indexer.getUnembeddedCount();
   }
 
-  getFeatureFlags(): { enableVisionEnrichment: boolean; enableEmbeddings: boolean } {
+  getFeatureFlags(): { enableVisionEnrichment: boolean; enableEmbeddings: boolean; enableAIDescriptions: boolean } {
     return {
       enableVisionEnrichment: this._config.enableVisionEnrichment,
       enableEmbeddings: this._config.enableEmbeddings,
+      enableAIDescriptions: this._config.enableAIDescriptions,
     };
   }
 
-  async updateFeatureFlags(flags: { enableVisionEnrichment?: boolean; enableEmbeddings?: boolean }): Promise<void> {
+  async updateFeatureFlags(flags: { enableVisionEnrichment?: boolean; enableEmbeddings?: boolean; enableAIDescriptions?: boolean }): Promise<void> {
     if (flags.enableVisionEnrichment !== undefined) {
       this._config.enableVisionEnrichment = flags.enableVisionEnrichment;
       if (flags.enableVisionEnrichment && !this._vision) {
@@ -499,6 +751,23 @@ export class FileMom {
       } else if (!flags.enableEmbeddings && this._embeddings) {
         await this._embeddings.close();
         this._embeddings = null;
+      }
+    }
+
+    if (flags.enableAIDescriptions !== undefined) {
+      this._config.enableAIDescriptions = flags.enableAIDescriptions;
+      if (flags.enableAIDescriptions && !this._describer) {
+        this._describer = new Describer({
+          apiKey: this._config.openRouterApiKey,
+          visionModel: this._config.visionModel,
+          textModel: this._config.descriptionModel,
+          concurrency: this._config.descriptionMaxConcurrent,
+          retryAttempts: this._config.retryAttempts,
+          retryDelayMs: this._config.retryDelayMs,
+          maxImageDimension: this._config.visionMaxImageDimension,
+        });
+      } else if (!flags.enableAIDescriptions) {
+        this._describer = null;
       }
     }
   }
@@ -615,7 +884,7 @@ export class FileMom {
       const action = plan.actions.find((a) => a.id === actionResult.actionId);
       if (!action) continue;
 
-      if (action.type === 'move_file' || action.type === 'rename_file') {
+      if (action.type === 'move_file' || action.type === 'rename_file' || action.type === 'copy_file') {
         // Use ACTUAL destination from transaction log (may differ from planned due to collision resolution)
         let actualDest = action.destination;
         if (actionResult.transactionId) {
@@ -625,11 +894,15 @@ export class FileMom {
 
         const record = await this._indexer.getByPath(action.source);
         if (record) {
-          await this._indexer.deleteFile(action.source);
+          if (action.type !== 'copy_file') {
+            await this._indexer.deleteFile(action.source);
+          }
           await this._indexer.upsertFile({
             ...record,
+            id: action.type === 'copy_file' ? 0 : record.id,
             path: actualDest,
             name: basename(actualDest),
+            extension: extname(actualDest).slice(1).toLowerCase() || record.extension,
             indexedAt: Date.now(),
           });
         }
@@ -757,6 +1030,19 @@ export class FileMom {
       visionCategory: null,
       visionTags: null,
       enrichedAt: null,
+      aiDescription: null,
+      aiCategory: null,
+      aiSubcategory: null,
+      aiTags: null,
+      aiDateContext: null,
+      aiSource: null,
+      aiContentType: null,
+      aiConfidence: null,
+      aiSensitive: null,
+      aiSensitiveType: null,
+      aiDetails: null,
+      aiDescribedAt: null,
+      aiDescriptionModel: null,
     };
   }
 }

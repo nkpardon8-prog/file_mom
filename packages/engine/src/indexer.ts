@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
-import type { FileRecord, SearchResult, SearchOptions, IndexStats, HybridSearchResult, SemanticSearchOptions } from './types.js';
+import type { FileRecord, SearchResult, SearchOptions, IndexStats, HybridSearchResult, SemanticSearchOptions, BrowseOptions, BrowseResult, FilterOptions, FolderInfo } from './types.js';
 import type { Embeddings } from './embeddings.js';
 
 export interface IndexerConfig {
@@ -8,7 +8,7 @@ export interface IndexerConfig {
   embeddingDimensions?: number;
 }
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 export class Indexer {
   private _db: Database.Database | null = null;
@@ -54,11 +54,17 @@ export class Indexer {
       INSERT INTO files (
         path, name, extension, size, mtime, ctime,
         quick_hash, extracted_text, exif_json, detected_mime, indexed_at, embedding_id,
-        vision_description, vision_category, vision_tags, enriched_at
+        vision_description, vision_category, vision_tags, enriched_at,
+        ai_description, ai_category, ai_subcategory, ai_tags, ai_date_context,
+        ai_source, ai_content_type, ai_confidence, ai_sensitive, ai_sensitive_type,
+        ai_details, ai_described_at, ai_description_model
       ) VALUES (
         @path, @name, @extension, @size, @mtime, @ctime,
         @quickHash, @extractedText, @exifJson, @detectedMimeType, @indexedAt, @embeddingId,
-        @visionDescription, @visionCategory, @visionTags, @enrichedAt
+        @visionDescription, @visionCategory, @visionTags, @enrichedAt,
+        @aiDescription, @aiCategory, @aiSubcategory, @aiTags, @aiDateContext,
+        @aiSource, @aiContentType, @aiConfidence, @aiSensitive, @aiSensitiveType,
+        @aiDetails, @aiDescribedAt, @aiDescriptionModel
       )
       ON CONFLICT(path) DO UPDATE SET
         name = @name,
@@ -75,7 +81,20 @@ export class Indexer {
         vision_description = @visionDescription,
         vision_category = @visionCategory,
         vision_tags = @visionTags,
-        enriched_at = @enrichedAt
+        enriched_at = @enrichedAt,
+        ai_description = @aiDescription,
+        ai_category = @aiCategory,
+        ai_subcategory = @aiSubcategory,
+        ai_tags = @aiTags,
+        ai_date_context = @aiDateContext,
+        ai_source = @aiSource,
+        ai_content_type = @aiContentType,
+        ai_confidence = @aiConfidence,
+        ai_sensitive = @aiSensitive,
+        ai_sensitive_type = @aiSensitiveType,
+        ai_details = @aiDetails,
+        ai_described_at = @aiDescribedAt,
+        ai_description_model = @aiDescriptionModel
     `);
 
     stmt.run({
@@ -95,6 +114,19 @@ export class Indexer {
       visionCategory: record.visionCategory,
       visionTags: record.visionTags,
       enrichedAt: record.enrichedAt,
+      aiDescription: record.aiDescription,
+      aiCategory: record.aiCategory,
+      aiSubcategory: record.aiSubcategory,
+      aiTags: record.aiTags,
+      aiDateContext: record.aiDateContext,
+      aiSource: record.aiSource,
+      aiContentType: record.aiContentType,
+      aiConfidence: record.aiConfidence,
+      aiSensitive: record.aiSensitive ? 1 : 0,
+      aiSensitiveType: record.aiSensitiveType,
+      aiDetails: record.aiDetails,
+      aiDescribedAt: record.aiDescribedAt,
+      aiDescriptionModel: record.aiDescriptionModel,
     });
   }
 
@@ -103,11 +135,17 @@ export class Indexer {
       INSERT INTO files (
         path, name, extension, size, mtime, ctime,
         quick_hash, extracted_text, exif_json, detected_mime, indexed_at, embedding_id,
-        vision_description, vision_category, vision_tags, enriched_at
+        vision_description, vision_category, vision_tags, enriched_at,
+        ai_description, ai_category, ai_subcategory, ai_tags, ai_date_context,
+        ai_source, ai_content_type, ai_confidence, ai_sensitive, ai_sensitive_type,
+        ai_details, ai_described_at, ai_description_model
       ) VALUES (
         @path, @name, @extension, @size, @mtime, @ctime,
         @quickHash, @extractedText, @exifJson, @detectedMimeType, @indexedAt, @embeddingId,
-        @visionDescription, @visionCategory, @visionTags, @enrichedAt
+        @visionDescription, @visionCategory, @visionTags, @enrichedAt,
+        @aiDescription, @aiCategory, @aiSubcategory, @aiTags, @aiDateContext,
+        @aiSource, @aiContentType, @aiConfidence, @aiSensitive, @aiSensitiveType,
+        @aiDetails, @aiDescribedAt, @aiDescriptionModel
       )
       ON CONFLICT(path) DO UPDATE SET
         name = @name, extension = @extension, size = @size,
@@ -115,7 +153,14 @@ export class Indexer {
         extracted_text = @extractedText, exif_json = @exifJson,
         detected_mime = @detectedMimeType, indexed_at = @indexedAt, embedding_id = @embeddingId,
         vision_description = @visionDescription, vision_category = @visionCategory,
-        vision_tags = @visionTags, enriched_at = @enrichedAt
+        vision_tags = @visionTags, enriched_at = @enrichedAt,
+        ai_description = @aiDescription, ai_category = @aiCategory,
+        ai_subcategory = @aiSubcategory, ai_tags = @aiTags,
+        ai_date_context = @aiDateContext, ai_source = @aiSource,
+        ai_content_type = @aiContentType, ai_confidence = @aiConfidence,
+        ai_sensitive = @aiSensitive, ai_sensitive_type = @aiSensitiveType,
+        ai_details = @aiDetails, ai_described_at = @aiDescribedAt,
+        ai_description_model = @aiDescriptionModel
     `);
     const upsert = this.db.transaction((items: FileRecord[]) => {
       for (const record of items) {
@@ -136,6 +181,19 @@ export class Indexer {
           visionCategory: record.visionCategory,
           visionTags: record.visionTags,
           enrichedAt: record.enrichedAt,
+          aiDescription: record.aiDescription,
+          aiCategory: record.aiCategory,
+          aiSubcategory: record.aiSubcategory,
+          aiTags: record.aiTags,
+          aiDateContext: record.aiDateContext,
+          aiSource: record.aiSource,
+          aiContentType: record.aiContentType,
+          aiConfidence: record.aiConfidence,
+          aiSensitive: record.aiSensitive ? 1 : 0,
+          aiSensitiveType: record.aiSensitiveType,
+          aiDetails: record.aiDetails,
+          aiDescribedAt: record.aiDescribedAt,
+          aiDescriptionModel: record.aiDescriptionModel,
         });
       }
     });
@@ -208,7 +266,7 @@ export class Indexer {
     const sql = `
       SELECT
         f.id, f.path, f.name, f.extension, f.size, f.mtime,
-        bm25(files_fts, 10.0, 1.0, 2.0, 5.0) AS score,
+        bm25(files_fts, 10.0, 1.0, 2.0, 5.0, 5.0) AS score,
         snippet(files_fts, 1, '<<', '>>', '...', 32) AS snippet
       FROM files_fts
       JOIN files f ON f.id = files_fts.rowid
@@ -232,6 +290,144 @@ export class Indexer {
       score: r.score,
       snippet: r.snippet,
     }));
+  }
+
+  // ============================================================
+  // Browse (filter-first with optional FTS5)
+  // ============================================================
+
+  async browseFiles(options?: BrowseOptions): Promise<BrowseResult[]> {
+    const limit = options?.limit ?? 50;
+    const offset = options?.offset ?? 0;
+    const conditions: string[] = [];
+    const params: Record<string, unknown> = { limit, offset };
+
+    // AI column filters
+    if (options?.category) {
+      conditions.push('f.ai_category = @category');
+      params.category = options.category;
+    }
+    if (options?.contentType) {
+      conditions.push('f.ai_content_type = @contentType');
+      params.contentType = options.contentType;
+    }
+    if (options?.dateContext) {
+      conditions.push('f.ai_date_context = @dateContext');
+      params.dateContext = options.dateContext;
+    }
+    if (options?.source) {
+      conditions.push('f.ai_source = @source');
+      params.source = options.source;
+    }
+    if (options?.sensitive) {
+      conditions.push('f.ai_sensitive = 1');
+    }
+    if (options?.tags?.length) {
+      const tagPlaceholders = options.tags.map((_, i) => `@tag${i}`);
+      conditions.push(`EXISTS (SELECT 1 FROM json_each(f.ai_tags) t WHERE t.value IN (${tagPlaceholders.join(',')}))`);
+      options.tags.forEach((tag, i) => { params[`tag${i}`] = tag; });
+    }
+
+    // Shared filters (same pattern as search())
+    if (options?.extensions?.length) {
+      const placeholders = options.extensions.map((_, i) => `@ext${i}`);
+      conditions.push(`f.extension IN (${placeholders.join(',')})`);
+      options.extensions.forEach((ext, i) => { params[`ext${i}`] = ext; });
+    }
+    if (options?.folders?.length) {
+      const folderConds = options.folders.map((_, i) => `f.path LIKE @folder${i} ESCAPE '\\'`);
+      conditions.push(`(${folderConds.join(' OR ')})`);
+      options.folders.forEach((folder, i) => { params[`folder${i}`] = `${this._escapeLike(folder)}%`; });
+    }
+
+    const sanitized = options?.q ? this._sanitizeQuery(options.q) : '';
+
+    if (sanitized) {
+      // FTS5 path: join with files_fts for text search + filters
+      params.query = sanitized;
+      const where = conditions.length > 0 ? `AND ${conditions.join(' AND ')}` : '';
+      const sql = `
+        SELECT f.id, f.path, f.name, f.extension, f.size, f.mtime,
+          f.ai_description, f.ai_category, f.ai_subcategory, f.ai_tags,
+          f.ai_content_type, f.ai_confidence, f.ai_sensitive,
+          bm25(files_fts, 10.0, 1.0, 2.0, 5.0, 5.0) AS score,
+          snippet(files_fts, 1, '<<', '>>', '...', 32) AS snippet
+        FROM files_fts
+        JOIN files f ON f.id = files_fts.rowid
+        WHERE files_fts MATCH @query ${where}
+        ORDER BY score
+        LIMIT @limit OFFSET @offset
+      `;
+      const rows = this.db.prepare(sql).all(params) as Array<Record<string, unknown>>;
+      return rows.map((r) => this._rowToBrowseResult(r));
+    } else {
+      // Filter-only path: query files table directly
+      const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      const sql = `
+        SELECT f.id, f.path, f.name, f.extension, f.size, f.mtime,
+          f.ai_description, f.ai_category, f.ai_subcategory, f.ai_tags,
+          f.ai_content_type, f.ai_confidence, f.ai_sensitive,
+          NULL AS score, NULL AS snippet
+        FROM files f
+        ${where}
+        ORDER BY f.mtime DESC
+        LIMIT @limit OFFSET @offset
+      `;
+      const rows = this.db.prepare(sql).all(params) as Array<Record<string, unknown>>;
+      return rows.map((r) => this._rowToBrowseResult(r));
+    }
+  }
+
+  async getFilterOptions(): Promise<FilterOptions> {
+    const categories = this.db.prepare(
+      'SELECT ai_category AS value, COUNT(*) AS count FROM files WHERE ai_category IS NOT NULL GROUP BY ai_category ORDER BY count DESC',
+    ).all() as Array<{ value: string; count: number }>;
+    const contentTypes = this.db.prepare(
+      'SELECT ai_content_type AS value, COUNT(*) AS count FROM files WHERE ai_content_type IS NOT NULL GROUP BY ai_content_type ORDER BY count DESC',
+    ).all() as Array<{ value: string; count: number }>;
+    const sources = this.db.prepare(
+      'SELECT ai_source AS value, COUNT(*) AS count FROM files WHERE ai_source IS NOT NULL GROUP BY ai_source ORDER BY count DESC LIMIT 20',
+    ).all() as Array<{ value: string; count: number }>;
+    const dateContexts = this.db.prepare(
+      'SELECT ai_date_context AS value, COUNT(*) AS count FROM files WHERE ai_date_context IS NOT NULL GROUP BY ai_date_context ORDER BY count DESC LIMIT 20',
+    ).all() as Array<{ value: string; count: number }>;
+    return { categories, contentTypes, sources, dateContexts };
+  }
+
+  async exportDescriptions(): Promise<FileRecord[]> {
+    const rows = this.db.prepare('SELECT * FROM files WHERE ai_described_at IS NOT NULL ORDER BY path').all() as RawFileRow[];
+    return rows.map((r) => this._rowToRecord(r));
+  }
+
+  async getFolders(): Promise<FolderInfo[]> {
+    return this.db.prepare(`
+      SELECT
+        SUBSTR(path, 1, LENGTH(path) - LENGTH(name) - 1) AS path,
+        COUNT(*) AS fileCount
+      FROM files
+      GROUP BY SUBSTR(path, 1, LENGTH(path) - LENGTH(name) - 1)
+      ORDER BY path
+    `).all() as FolderInfo[];
+  }
+
+  private _rowToBrowseResult(r: Record<string, unknown>): BrowseResult {
+    return {
+      id: r.id as number,
+      path: r.path as string,
+      name: r.name as string,
+      extension: r.extension as string,
+      size: r.size as number,
+      mtime: r.mtime as number,
+      aiDescription: (r.ai_description as string) ?? null,
+      aiCategory: (r.ai_category as string) ?? null,
+      aiSubcategory: (r.ai_subcategory as string) ?? null,
+      aiTags: (r.ai_tags as string) ?? null,
+      aiContentType: (r.ai_content_type as string) ?? null,
+      aiConfidence: (r.ai_confidence as number) ?? null,
+      aiSensitive: !!(r.ai_sensitive as number),
+      snippet: (r.snippet as string) ?? null,
+      score: (r.score as number) ?? null,
+    };
   }
 
   // ============================================================
@@ -432,6 +628,21 @@ export class Indexer {
     return combined.slice(0, limit);
   }
 
+  async getUndescribedCount(): Promise<number> {
+    const row = this.db.prepare('SELECT COUNT(*) as cnt FROM files WHERE ai_described_at IS NULL').get() as { cnt: number };
+    return row.cnt;
+  }
+
+  async getUndescribed(options?: { limit?: number }): Promise<FileRecord[]> {
+    const limit = options?.limit ?? 100;
+    const rows = this.db.prepare('SELECT * FROM files WHERE ai_described_at IS NULL ORDER BY mtime DESC LIMIT ?').all(limit) as RawFileRow[];
+    return rows.map((r) => this._rowToRecord(r));
+  }
+
+  async getCategories(): Promise<Array<{ category: string; count: number }>> {
+    return this.db.prepare('SELECT ai_category as category, COUNT(*) as count FROM files WHERE ai_category IS NOT NULL GROUP BY ai_category ORDER BY count DESC').all() as Array<{ category: string; count: number }>;
+  }
+
   async getStats(): Promise<IndexStats> {
     const total = this.db.prepare('SELECT COUNT(*) as cnt, COALESCE(SUM(size), 0) as totalSize FROM files').get() as { cnt: number; totalSize: number };
     const oldest = this.db.prepare('SELECT MIN(mtime) as val FROM files').get() as { val: number | null };
@@ -502,6 +713,7 @@ export class Indexer {
       if (fromVersion < 1) this._migrationV1();
       if (fromVersion < 2) this._migrationV2();
       if (fromVersion < 3) this._migrationV3();
+      if (fromVersion < 4) this._migrationV4();
       this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
     });
     migrate();
@@ -510,6 +722,68 @@ export class Indexer {
   private _migrationV3(): void {
     // Add detected MIME type column for content-based file type identification
     this.db.exec(`ALTER TABLE files ADD COLUMN detected_mime TEXT`);
+  }
+
+  private _migrationV4(): void {
+    // Add AI description columns
+    this.db.exec(`ALTER TABLE files ADD COLUMN ai_description TEXT`);
+    this.db.exec(`ALTER TABLE files ADD COLUMN ai_category TEXT`);
+    this.db.exec(`ALTER TABLE files ADD COLUMN ai_subcategory TEXT`);
+    this.db.exec(`ALTER TABLE files ADD COLUMN ai_tags TEXT`);
+    this.db.exec(`ALTER TABLE files ADD COLUMN ai_date_context TEXT`);
+    this.db.exec(`ALTER TABLE files ADD COLUMN ai_source TEXT`);
+    this.db.exec(`ALTER TABLE files ADD COLUMN ai_content_type TEXT`);
+    this.db.exec(`ALTER TABLE files ADD COLUMN ai_confidence REAL`);
+    this.db.exec(`ALTER TABLE files ADD COLUMN ai_sensitive INTEGER DEFAULT 0`);
+    this.db.exec(`ALTER TABLE files ADD COLUMN ai_sensitive_type TEXT`);
+    this.db.exec(`ALTER TABLE files ADD COLUMN ai_details TEXT`);
+    this.db.exec(`ALTER TABLE files ADD COLUMN ai_described_at INTEGER`);
+    this.db.exec(`ALTER TABLE files ADD COLUMN ai_description_model TEXT`);
+
+    // Add indexes for AI columns
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_files_ai_category ON files(ai_category)`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_files_ai_content_type ON files(ai_content_type)`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_files_ai_sensitive ON files(ai_sensitive)`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_files_ai_described_at ON files(ai_described_at)`);
+
+    // Drop old FTS5 triggers and table, recreate with ai_description column
+    this.db.exec(`DROP TRIGGER IF EXISTS files_ai`);
+    this.db.exec(`DROP TRIGGER IF EXISTS files_ad`);
+    this.db.exec(`DROP TRIGGER IF EXISTS files_au`);
+    this.db.exec(`DROP TABLE IF EXISTS files_fts`);
+
+    this.db.exec(`
+      CREATE VIRTUAL TABLE files_fts USING fts5(
+        name,
+        extracted_text,
+        path,
+        vision_description,
+        ai_description,
+        content='files',
+        content_rowid='id',
+        tokenize='porter unicode61'
+      );
+
+      CREATE TRIGGER files_ai AFTER INSERT ON files BEGIN
+        INSERT INTO files_fts(rowid, name, extracted_text, path, vision_description, ai_description)
+        VALUES (new.id, new.name, COALESCE(new.extracted_text, ''), new.path, COALESCE(new.vision_description, ''), COALESCE(new.ai_description, ''));
+      END;
+
+      CREATE TRIGGER files_ad AFTER DELETE ON files BEGIN
+        INSERT INTO files_fts(files_fts, rowid, name, extracted_text, path, vision_description, ai_description)
+        VALUES ('delete', old.id, old.name, COALESCE(old.extracted_text, ''), old.path, COALESCE(old.vision_description, ''), COALESCE(old.ai_description, ''));
+      END;
+
+      CREATE TRIGGER files_au AFTER UPDATE ON files BEGIN
+        INSERT INTO files_fts(files_fts, rowid, name, extracted_text, path, vision_description, ai_description)
+        VALUES ('delete', old.id, old.name, COALESCE(old.extracted_text, ''), old.path, COALESCE(old.vision_description, ''), COALESCE(old.ai_description, ''));
+        INSERT INTO files_fts(rowid, name, extracted_text, path, vision_description, ai_description)
+        VALUES (new.id, new.name, COALESCE(new.extracted_text, ''), new.path, COALESCE(new.vision_description, ''), COALESCE(new.ai_description, ''));
+      END;
+    `);
+
+    // Rebuild FTS index with existing data
+    this.db.exec(`INSERT INTO files_fts(files_fts) VALUES('rebuild')`);
   }
 
   private _migrationV2(): void {
@@ -604,6 +878,19 @@ export class Indexer {
       visionCategory: row.vision_category,
       visionTags: row.vision_tags,
       enrichedAt: row.enriched_at,
+      aiDescription: row.ai_description,
+      aiCategory: row.ai_category,
+      aiSubcategory: row.ai_subcategory,
+      aiTags: row.ai_tags,
+      aiDateContext: row.ai_date_context,
+      aiSource: row.ai_source,
+      aiContentType: row.ai_content_type,
+      aiConfidence: row.ai_confidence,
+      aiSensitive: row.ai_sensitive ? true : false,
+      aiSensitiveType: row.ai_sensitive_type,
+      aiDetails: row.ai_details,
+      aiDescribedAt: row.ai_described_at,
+      aiDescriptionModel: row.ai_description_model,
     };
   }
 }
@@ -627,4 +914,17 @@ interface RawFileRow {
   vision_category: string | null;
   vision_tags: string | null;
   enriched_at: number | null;
+  ai_description: string | null;
+  ai_category: string | null;
+  ai_subcategory: string | null;
+  ai_tags: string | null;
+  ai_date_context: string | null;
+  ai_source: string | null;
+  ai_content_type: string | null;
+  ai_confidence: number | null;
+  ai_sensitive: number | null;
+  ai_sensitive_type: string | null;
+  ai_details: string | null;
+  ai_described_at: number | null;
+  ai_description_model: string | null;
 }

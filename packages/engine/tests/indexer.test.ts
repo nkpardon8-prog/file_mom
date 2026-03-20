@@ -27,6 +27,19 @@ function makeRecord(overrides: Partial<FileRecord> = {}): FileRecord {
     visionCategory: null,
     visionTags: null,
     enrichedAt: null,
+    aiDescription: null,
+    aiCategory: null,
+    aiSubcategory: null,
+    aiTags: null,
+    aiDateContext: null,
+    aiSource: null,
+    aiContentType: null,
+    aiConfidence: null,
+    aiSensitive: null,
+    aiSensitiveType: null,
+    aiDetails: null,
+    aiDescribedAt: null,
+    aiDescriptionModel: null,
     ...overrides,
   };
 }
@@ -611,5 +624,186 @@ describe('Indexer', () => {
     expect(await indexer.getFileCountInFolder('/docs')).toBe(2);
     expect(await indexer.getFileCountInFolder('/photos')).toBe(1);
     expect(await indexer.getFileCountInFolder('/empty')).toBe(0);
+  });
+
+  // ============================================================
+  // AI Description fields
+  // ============================================================
+
+  it('stores and retrieves AI description fields', async () => {
+    await indexer.upsertFile(makeRecord({
+      path: '/test/described.txt',
+      name: 'described.txt',
+      aiDescription: 'Quarterly revenue report Q4 2024',
+      aiCategory: 'financial',
+      aiSubcategory: 'report',
+      aiTags: '["revenue","Q4","2024"]',
+      aiDateContext: 'Q4 2024',
+      aiSource: 'Accounting',
+      aiContentType: 'document',
+      aiConfidence: 0.95,
+      aiSensitive: true,
+      aiSensitiveType: 'financial',
+      aiDetails: '{"documentType":"report"}',
+      aiDescribedAt: Date.now(),
+      aiDescriptionModel: 'google/gemini-2.5-flash',
+    }));
+
+    const result = await indexer.getByPath('/test/described.txt');
+    expect(result).not.toBeNull();
+    expect(result!.aiDescription).toBe('Quarterly revenue report Q4 2024');
+    expect(result!.aiCategory).toBe('financial');
+    expect(result!.aiSubcategory).toBe('report');
+    expect(result!.aiConfidence).toBe(0.95);
+    expect(result!.aiSensitive).toBe(true);
+    expect(result!.aiContentType).toBe('document');
+    expect(result!.aiDescriptionModel).toBe('google/gemini-2.5-flash');
+  });
+
+  it('getUndescribedCount returns correct count', async () => {
+    await indexer.upsertFile(makeRecord({ path: '/test/a.txt' }));
+    await indexer.upsertFile(makeRecord({ path: '/test/b.txt', aiDescribedAt: Date.now() }));
+    await indexer.upsertFile(makeRecord({ path: '/test/c.txt' }));
+
+    const count = await indexer.getUndescribedCount();
+    expect(count).toBe(2);
+  });
+
+  it('getUndescribed returns undescribed files', async () => {
+    await indexer.upsertFile(makeRecord({ path: '/test/a.txt', mtime: 1000 }));
+    await indexer.upsertFile(makeRecord({ path: '/test/b.txt', mtime: 2000, aiDescribedAt: Date.now() }));
+    await indexer.upsertFile(makeRecord({ path: '/test/c.txt', mtime: 3000 }));
+
+    const files = await indexer.getUndescribed({ limit: 10 });
+    expect(files).toHaveLength(2);
+    expect(files[0].path).toBe('/test/c.txt');
+    expect(files[1].path).toBe('/test/a.txt');
+  });
+
+  it('getCategories returns category breakdown', async () => {
+    await indexer.upsertFile(makeRecord({ path: '/a', aiCategory: 'financial' }));
+    await indexer.upsertFile(makeRecord({ path: '/b', aiCategory: 'financial' }));
+    await indexer.upsertFile(makeRecord({ path: '/c', aiCategory: 'work' }));
+    await indexer.upsertFile(makeRecord({ path: '/d' }));
+
+    const categories = await indexer.getCategories();
+    expect(categories).toHaveLength(2);
+    expect(categories[0]).toEqual({ category: 'financial', count: 2 });
+    expect(categories[1]).toEqual({ category: 'work', count: 1 });
+  });
+
+  it('FTS5 search finds files by ai_description', async () => {
+    await indexer.upsertFile(makeRecord({
+      path: '/test/invoice.pdf',
+      name: 'invoice.pdf',
+      aiDescription: 'Amazon purchase invoice for electronics',
+    }));
+
+    const results = await indexer.search('amazon electronics');
+    expect(results).toHaveLength(1);
+    expect(results[0].name).toBe('invoice.pdf');
+  });
+
+  // ============================================================
+  // browseFiles & getFilterOptions
+  // ============================================================
+
+  it('browseFiles with no options returns all files', async () => {
+    await indexer.upsertFile(makeRecord({ path: '/a/file1.txt', name: 'file1.txt', mtime: 1000 }));
+    await indexer.upsertFile(makeRecord({ path: '/a/file2.txt', name: 'file2.txt', mtime: 2000 }));
+    await indexer.upsertFile(makeRecord({ path: '/a/file3.txt', name: 'file3.txt', mtime: 3000 }));
+
+    const results = await indexer.browseFiles();
+    expect(results).toHaveLength(3);
+    // Ordered by mtime DESC
+    expect(results[0].name).toBe('file3.txt');
+    expect(results[2].name).toBe('file1.txt');
+    expect(results[0].score).toBeNull();
+    expect(results[0].snippet).toBeNull();
+  });
+
+  it('browseFiles filters by category', async () => {
+    await indexer.upsertFile(makeRecord({ path: '/a/inv.pdf', name: 'inv.pdf', aiCategory: 'financial' }));
+    await indexer.upsertFile(makeRecord({ path: '/a/resume.pdf', name: 'resume.pdf', aiCategory: 'work' }));
+    await indexer.upsertFile(makeRecord({ path: '/a/photo.jpg', name: 'photo.jpg', aiCategory: 'personal' }));
+
+    const results = await indexer.browseFiles({ category: 'financial' });
+    expect(results).toHaveLength(1);
+    expect(results[0].name).toBe('inv.pdf');
+    expect(results[0].aiCategory).toBe('financial');
+  });
+
+  it('browseFiles filters by contentType', async () => {
+    await indexer.upsertFile(makeRecord({ path: '/a/doc.pdf', name: 'doc.pdf', aiContentType: 'document' }));
+    await indexer.upsertFile(makeRecord({ path: '/a/photo.jpg', name: 'photo.jpg', aiContentType: 'photo' }));
+
+    const results = await indexer.browseFiles({ contentType: 'photo' });
+    expect(results).toHaveLength(1);
+    expect(results[0].aiContentType).toBe('photo');
+  });
+
+  it('browseFiles filters by sensitive', async () => {
+    await indexer.upsertFile(makeRecord({ path: '/a/tax.pdf', name: 'tax.pdf', aiSensitive: true }));
+    await indexer.upsertFile(makeRecord({ path: '/a/photo.jpg', name: 'photo.jpg', aiSensitive: false }));
+
+    const results = await indexer.browseFiles({ sensitive: true });
+    expect(results).toHaveLength(1);
+    expect(results[0].name).toBe('tax.pdf');
+    expect(results[0].aiSensitive).toBe(true);
+  });
+
+  it('browseFiles combines FTS query with category filter', async () => {
+    await indexer.upsertFile(makeRecord({ path: '/a/inv.pdf', name: 'inv.pdf', aiCategory: 'financial', extractedText: 'amazon invoice' }));
+    await indexer.upsertFile(makeRecord({ path: '/a/letter.pdf', name: 'letter.pdf', aiCategory: 'work', extractedText: 'amazon letter' }));
+
+    const results = await indexer.browseFiles({ q: 'amazon', category: 'financial' });
+    expect(results).toHaveLength(1);
+    expect(results[0].name).toBe('inv.pdf');
+    expect(results[0].score).not.toBeNull();
+  });
+
+  it('browseFiles with q returns score and snippet', async () => {
+    await indexer.upsertFile(makeRecord({ path: '/a/doc.pdf', name: 'doc.pdf', extractedText: 'quarterly revenue report' }));
+
+    const results = await indexer.browseFiles({ q: 'revenue' });
+    expect(results).toHaveLength(1);
+    expect(results[0].score).not.toBeNull();
+    expect(typeof results[0].score).toBe('number');
+  });
+
+  it('browseFiles without q returns null score', async () => {
+    await indexer.upsertFile(makeRecord({ path: '/a/doc.pdf', name: 'doc.pdf' }));
+
+    const results = await indexer.browseFiles();
+    expect(results[0].score).toBeNull();
+    expect(results[0].snippet).toBeNull();
+  });
+
+  it('getFolders returns folder paths with file counts', async () => {
+    await indexer.upsertFile(makeRecord({ path: '/docs/a.pdf', name: 'a.pdf' }));
+    await indexer.upsertFile(makeRecord({ path: '/docs/b.pdf', name: 'b.pdf' }));
+    await indexer.upsertFile(makeRecord({ path: '/photos/c.jpg', name: 'c.jpg' }));
+
+    const folders = await indexer.getFolders();
+    expect(folders.length).toBeGreaterThanOrEqual(2);
+    const docs = folders.find((f) => f.path === '/docs');
+    const photos = folders.find((f) => f.path === '/photos');
+    expect(docs?.fileCount).toBe(2);
+    expect(photos?.fileCount).toBe(1);
+  });
+
+  it('getFilterOptions returns aggregated counts', async () => {
+    await indexer.upsertFile(makeRecord({ path: '/a/f1.pdf', name: 'f1.pdf', aiCategory: 'financial', aiContentType: 'document', aiSource: 'Amazon', aiDateContext: '2024' }));
+    await indexer.upsertFile(makeRecord({ path: '/a/f2.pdf', name: 'f2.pdf', aiCategory: 'financial', aiContentType: 'document', aiSource: 'Amazon', aiDateContext: '2024' }));
+    await indexer.upsertFile(makeRecord({ path: '/a/f3.jpg', name: 'f3.jpg', aiCategory: 'personal', aiContentType: 'photo', aiSource: null, aiDateContext: 'Summer 2023' }));
+
+    const opts = await indexer.getFilterOptions();
+    expect(opts.categories).toHaveLength(2);
+    expect(opts.categories[0]).toEqual({ value: 'financial', count: 2 });
+    expect(opts.categories[1]).toEqual({ value: 'personal', count: 1 });
+    expect(opts.contentTypes).toHaveLength(2);
+    expect(opts.sources).toHaveLength(1);
+    expect(opts.sources[0]).toEqual({ value: 'Amazon', count: 2 });
+    expect(opts.dateContexts).toHaveLength(2);
   });
 });

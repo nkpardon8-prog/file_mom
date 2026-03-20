@@ -34,6 +34,10 @@ export const ConfigSchema = z.object({
   enableEmbeddings: z.boolean().default(false),
   embeddingModel: z.string().default('all-MiniLM-L6-v2'),
   embeddingDimensions: z.number().int().min(64).max(2048).default(384),
+  enableAIDescriptions: z.boolean().default(false),
+  descriptionModel: z.string().default('google/gemini-2.5-flash'),
+  descriptionBatchSize: z.number().int().min(1).max(500).default(100),
+  descriptionMaxConcurrent: z.number().int().min(1).max(20).default(5),
 });
 
 /** Default configuration values */
@@ -66,4 +70,8 @@ export const DEFAULT_CONFIG: Partial<FileMomConfig> = {
   enableEmbeddings: false,
   embeddingModel: 'all-MiniLM-L6-v2',
   embeddingDimensions: 384,
+  enableAIDescriptions: false,
+  descriptionModel: 'google/gemini-2.5-flash',
+  descriptionBatchSize: 100,
+  descriptionMaxConcurrent: 5,
 };

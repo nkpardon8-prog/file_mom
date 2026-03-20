@@ -2,7 +2,7 @@ import { z } from 'zod';
 import OpenAI from 'openai';
 import pRetry from 'p-retry';
 import { AIError } from './errors.js';
-import type { ActionPlan, FileIndexEntry, IndexStats, PlanOptions } from './types.js';
+import type { ActionPlan, FileIndexEntry, IndexStats, PlanOptions, SmartFolderMessage, SmartFolderResponse } from './types.js';
 
 // ============================================================
 // Zod schemas for validating AI response
@@ -169,6 +169,36 @@ RULES:
 
 You MUST use the create_action_plan tool to submit the refined plan.`;
 
+// ============================================================
+// Smart Folder Conversation
+// ============================================================
+
+const SMART_FOLDER_PROMPT = `You are FileMom, helping a user create a smart folder. The user will name a folder and describe what files belong in it. Your job is to:
+
+1. Ask 2-3 SHORT clarifying questions to narrow the criteria (one response, numbered list)
+2. After the user answers, generate precise search criteria and set "done" to true
+
+AVAILABLE FILTER FIELDS (use only what's relevant):
+- q: free-text search keywords (space-separated, searched in filenames + content + AI descriptions)
+- category: one of financial, work, personal, medical, legal, education, creative, communication, reference, media
+- contentType: one of photo, screenshot, scan, document, spreadsheet, audio, other
+- dateContext: time period like "2024", "Q4 2024", "Summer 2023"
+- source: origin like "Amazon", "work"
+- sensitive: true if only sensitive/PII files
+- tags: array of tag strings to match
+- extensions: array of file extensions like ["pdf", "docx"]
+
+RULES:
+- First response: ask 2-3 clarifying questions, set done=false, criteria=null
+- After user answers: provide final criteria with done=true
+- Be concise — no more than 3 questions
+- Only include filter fields that are relevant to the user's request
+
+Respond with ONLY valid JSON:
+{"message": "your text", "criteria": null, "done": false}
+or
+{"message": "your text", "criteria": {"q": "...", "category": "..."}, "done": true}`;
+
 export function buildUserPrompt(
   command: string,
   files: FileIndexEntry[],
@@ -319,6 +349,72 @@ export class AIInterface {
     const userMessage = buildRefinementPrompt(currentPlan, feedback, history);
     const response = await this._callOpenRouter(REFINEMENT_SYSTEM_PROMPT, userMessage);
     return this._parseResponse(response);
+  }
+
+  async smartFolderConverse(
+    folderName: string,
+    description: string,
+    messages: SmartFolderMessage[],
+  ): Promise<SmartFolderResponse> {
+    let userContent = `FOLDER NAME: "${folderName}"\nDESCRIPTION: "${description}"`;
+    if (messages.length > 0) {
+      userContent += '\n\nCONVERSATION:\n';
+      for (const msg of messages) {
+        userContent += `${msg.role === 'user' ? 'User' : 'AI'}: ${msg.content}\n`;
+      }
+    }
+
+    const response = await pRetry(
+      async () => {
+        const result = await this._client.chat.completions.create({
+          model: this._config.model,
+          messages: [
+            { role: 'system', content: SMART_FOLDER_PROMPT },
+            { role: 'user', content: userContent },
+          ],
+          response_format: { type: 'json_object' },
+          max_tokens: 500,
+        });
+        const usage = result.usage as Record<string, unknown> | undefined;
+        if (usage && typeof usage.cost === 'number') {
+          this._totalCost += usage.cost;
+        }
+        return result;
+      },
+      {
+        retries: this._config.retryAttempts,
+        minTimeout: this._config.retryDelayMs,
+        shouldRetry: (err: unknown) => {
+          if (err instanceof OpenAI.APIError) {
+            return [408, 429, 502, 503].includes(err.status ?? 0);
+          }
+          return false;
+        },
+      },
+    );
+
+    const choice = response.choices[0];
+    if (!choice?.message.content) {
+      throw new AIError('Smart folder response contained no content');
+    }
+
+    let parsed: Record<string, unknown>;
+    try {
+      const cleaned = choice.message.content.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+      parsed = JSON.parse(cleaned);
+    } catch (e) {
+      throw new AIError(
+        `Failed to parse smart folder response: ${e instanceof Error ? e.message : String(e)}`,
+        e instanceof Error ? e : undefined,
+      );
+    }
+
+    return {
+      message: (parsed.message as string) ?? '',
+      criteria: (parsed.criteria as SmartFolderResponse['criteria']) ?? null,
+      matchCount: -1,
+      done: (parsed.done as boolean) ?? false,
+    };
   }
 
   getCost(): number {

@@ -70,9 +70,9 @@ export function FileDetail({ path, onClose }: FileDetailProps) {
     <div className="fixed inset-0 z-50 flex justify-end">
       <div className="absolute inset-0 bg-black/30" onClick={onClose} />
 
-      <div className="relative w-[480px] bg-white shadow-xl overflow-y-auto">
+      <div className="relative w-[480px] bg-white shadow-xl overflow-y-auto dark:bg-gray-800">
         {/* Header */}
-        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-gray-200 bg-white px-6 py-4">
+        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-gray-200 bg-white px-6 py-4 dark:border-gray-700 dark:bg-gray-800">
           <div className="flex items-center gap-3 min-w-0">
             <FileText className="h-5 w-5 shrink-0 text-gray-400" />
             <h2 className="truncate text-lg font-semibold text-gray-900">{file?.name ?? 'Loading...'}</h2>
@@ -178,6 +178,49 @@ export function FileDetail({ path, onClose }: FileDetailProps) {
                   )}
                   {file.enrichedAt && (
                     <p className="text-xs text-gray-400">Enriched {formatRelativeTime(tsToIso(file.enrichedAt))}</p>
+                  )}
+                </div>
+              </CollapsibleSection>
+            )}
+
+            {/* AI Description */}
+            {file.aiDescription && (
+              <CollapsibleSection title="AI Description" badge={file.aiConfidence != null ? `${Math.round(file.aiConfidence * 100)}%` : undefined} defaultOpen>
+                <div className="space-y-3">
+                  <p className="text-sm text-gray-700 dark:text-gray-300">{file.aiDescription}</p>
+                  <div className="flex flex-wrap gap-2">
+                    {file.aiCategory && (
+                      <span className="rounded-full bg-indigo-100 px-2.5 py-0.5 text-xs font-medium text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300">{file.aiCategory}</span>
+                    )}
+                    {file.aiSubcategory && (
+                      <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-400">{file.aiSubcategory}</span>
+                    )}
+                    {file.aiContentType && (
+                      <span className="rounded-full bg-blue-100 px-2.5 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-900 dark:text-blue-300">{file.aiContentType}</span>
+                    )}
+                  </div>
+                  {file.aiTags && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {(() => { try { return JSON.parse(file.aiTags); } catch { return []; } })()
+                        .map((tag: string) => (
+                          <span key={tag} className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-gray-700 dark:text-gray-400">{tag}</span>
+                        ))}
+                    </div>
+                  )}
+                  {file.aiSensitive && (
+                    <div className="flex items-center gap-1.5 text-xs text-red-600 dark:text-red-400">
+                      <span className="font-medium">Sensitive</span>
+                      {file.aiSensitiveType && <span>({file.aiSensitiveType})</span>}
+                    </div>
+                  )}
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-400 dark:text-gray-500">
+                    {file.aiDateContext && <span>Date: {file.aiDateContext}</span>}
+                    {file.aiSource && <span>Source: {file.aiSource}</span>}
+                    {file.aiDescriptionModel && <span>Model: {file.aiDescriptionModel}</span>}
+                    {file.aiDescribedAt && <span>Described {formatRelativeTime(tsToIso(file.aiDescribedAt))}</span>}
+                  </div>
+                  {file.aiConfidence != null && file.aiConfidence < 0.5 && (
+                    <p className="rounded bg-amber-50 px-2 py-1 text-xs text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">AI unsure — low confidence classification</p>
                   )}
                 </div>
               </CollapsibleSection>

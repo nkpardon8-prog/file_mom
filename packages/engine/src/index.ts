@@ -6,6 +6,7 @@ export { Scanner } from './scanner.js';
 export { Extractor } from './extractor.js';
 export { Indexer } from './indexer.js';
 export { VisionEnricher } from './vision.js';
+export { Describer, DescriptionResponseSchema } from './describer.js';
 export { Watcher } from './watcher.js';
 export {
   AIInterface,
@@ -54,4 +55,5 @@ export type { AIInterfaceConfig, QueryExpansion } from './ai.js';
 export type { ExecutorConfig } from './executor.js';
 export type { TransactionLogConfig } from './transaction.js';
 export type { VisionEnricherConfig } from './vision.js';
+export type { DescriberConfig, DescriptionFields } from './describer.js';
 export type { EmbeddingsConfig } from './embeddings.js';

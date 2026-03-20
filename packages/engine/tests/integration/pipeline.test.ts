@@ -42,6 +42,20 @@ function buildRecord(scanned: ScannedFile, extracted: ExtractedMetadata): FileRe
     visionCategory: null,
     visionTags: null,
     enrichedAt: null,
+    detectedMimeType: extracted.detectedMimeType ?? null,
+    aiDescription: null,
+    aiCategory: null,
+    aiSubcategory: null,
+    aiTags: null,
+    aiDateContext: null,
+    aiSource: null,
+    aiContentType: null,
+    aiConfidence: null,
+    aiSensitive: null,
+    aiSensitiveType: null,
+    aiDetails: null,
+    aiDescribedAt: null,
+    aiDescriptionModel: null,
   };
 }
 
@@ -209,6 +223,101 @@ describe('Pipeline Integration', () => {
       const stats = await filemom.getStats();
       expect(stats.totalFiles).toBe(3);
       expect(stats.totalSize).toBeGreaterThan(0);
+    } finally {
+      await filemom.shutdown();
+    }
+  });
+
+  it('V2 E2E: scan → browse with AI fields → filter by folder → file operations', async () => {
+    const docsDir = join(filesDir, 'docs');
+    const photosDir = join(filesDir, 'photos');
+    await mkdir(docsDir, { recursive: true });
+    await mkdir(photosDir, { recursive: true });
+    await writeFile(join(docsDir, 'invoice.pdf'), 'fake pdf content');
+    await writeFile(join(docsDir, 'report.txt'), 'quarterly revenue analysis');
+    await writeFile(join(photosDir, 'beach.jpg'), 'fake image data');
+
+    const filemom = new FileMom({
+      dataDir,
+      watchedFolders: [filesDir],
+      openRouterApiKey: 'test-key',
+      skipExtensions: [],
+    });
+    await filemom.initialize();
+
+    try {
+      // 1. Scan
+      const scanResult = await filemom.scan();
+      expect(scanResult.totalFiles).toBe(3);
+
+      // 2. Manually set AI fields (simulates Describer output)
+      const invoice = await filemom.getFile(join(docsDir, 'invoice.pdf'));
+      expect(invoice).not.toBeNull();
+      const indexer = (filemom as any)._indexer;
+      await indexer.upsertFile({
+        ...invoice!,
+        aiDescription: 'Invoice from Amazon for electronics',
+        aiCategory: 'financial',
+        aiSubcategory: 'invoice',
+        aiTags: '["amazon","electronics"]',
+        aiContentType: 'document',
+        aiConfidence: 0.92,
+        aiSensitive: true,
+        aiSensitiveType: 'financial',
+        aiDescribedAt: Date.now(),
+        aiDescriptionModel: 'test-model',
+      });
+
+      // 3. Browse all files
+      const allFiles = await filemom.browseFiles();
+      expect(allFiles.length).toBe(3);
+
+      // 4. Browse by folder
+      const docsOnly = await filemom.browseFiles({ folders: [docsDir] });
+      expect(docsOnly.length).toBe(2);
+      expect(docsOnly.every((f) => f.path.startsWith(docsDir))).toBe(true);
+
+      const photosOnly = await filemom.browseFiles({ folders: [photosDir] });
+      expect(photosOnly.length).toBe(1);
+      expect(photosOnly[0].name).toBe('beach.jpg');
+
+      // 5. Browse by category filter
+      const financial = await filemom.browseFiles({ category: 'financial' });
+      expect(financial.length).toBe(1);
+      expect(financial[0].aiDescription).toBe('Invoice from Amazon for electronics');
+      expect(financial[0].aiSensitive).toBe(true);
+
+      // 6. Browse with FTS query + filter (search by filename — .txt content isn't extracted)
+      const searchInDocs = await filemom.browseFiles({ q: 'report', folders: [docsDir] });
+      expect(searchInDocs.length).toBe(1);
+      expect(searchInDocs[0].name).toBe('report.txt');
+      expect(searchInDocs[0].score).not.toBeNull();
+
+      // 7. Filter options
+      const filterOpts = await filemom.getFilterOptions();
+      expect(filterOpts.categories.length).toBeGreaterThanOrEqual(1);
+      expect(filterOpts.categories[0].value).toBe('financial');
+
+      // 8. Folders
+      const folders = await filemom.getFolders();
+      expect(folders.length).toBeGreaterThanOrEqual(2);
+
+      // 9. Move file
+      const destPath = join(photosDir, 'invoice.pdf');
+      const moveResult = await filemom.moveFile(join(docsDir, 'invoice.pdf'), destPath);
+      expect(moveResult.success).toBe(true);
+
+      // Verify index updated
+      const movedFile = await filemom.getFile(destPath);
+      expect(movedFile).not.toBeNull();
+      expect(movedFile!.aiDescription).toBe('Invoice from Amazon for electronics');
+      const oldFile = await filemom.getFile(join(docsDir, 'invoice.pdf'));
+      expect(oldFile).toBeNull();
+
+      // 10. Export descriptions
+      const exported = await filemom.exportDescriptions();
+      expect(exported.length).toBe(1);
+      expect(exported[0].aiDescription).toBe('Invoice from Amazon for electronics');
     } finally {
       await filemom.shutdown();
     }

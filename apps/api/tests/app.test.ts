@@ -244,6 +244,113 @@ describe('API Server', () => {
   });
 
   // ============================================================
+  // AI Descriptions
+  // ============================================================
+
+  it('GET /api/describe/status returns count and flag', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/describe/status' });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(typeof body.data.undescribedCount).toBe('number');
+    expect(typeof body.data.enableAIDescriptions).toBe('boolean');
+  });
+
+  it('POST /api/describe/batch returns error when not enabled', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/describe/batch', payload: {} });
+    // enableAIDescriptions defaults to false, so this should throw AIError
+    expect(res.statusCode).toBeGreaterThanOrEqual(400);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBeDefined();
+  });
+
+  it('POST /api/describe/file returns 400 for missing path', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/describe/file', payload: {} });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toContain('Missing');
+  });
+
+  it('POST /api/describe/file returns 400 for empty path', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/describe/file', payload: { path: '  ' } });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toContain('Missing');
+  });
+
+  it('GET /api/describe/cost returns cost', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/describe/cost' });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(typeof body.data.cost).toBe('number');
+  });
+
+  // ============================================================
+  // Folders & File Operations
+  // ============================================================
+
+  it('GET /api/folders returns folder list', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/folders' });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(Array.isArray(body.data)).toBe(true);
+  });
+
+  it('POST /api/files/move returns 400 for missing fields', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/files/move', payload: {} });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toContain('Missing');
+  });
+
+  it('POST /api/files/rename returns 400 for missing fields', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/files/rename', payload: { path: '/test' } });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toContain('Missing');
+  });
+
+  it('POST /api/files/delete returns 400 for missing path', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/files/delete', payload: {} });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toContain('Missing');
+  });
+
+  // ============================================================
+  // Export
+  // ============================================================
+
+  it('GET /api/files/export returns array', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/files/export' });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(Array.isArray(body.data)).toBe(true);
+  });
+
+  // ============================================================
+  // Smart Folders
+  // ============================================================
+
+  it('POST /api/smart-folder/ask returns 400 for missing fields', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/smart-folder/ask', payload: {} });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toContain('Missing');
+  });
+
+  it('POST /api/smart-folder/preview returns 400 for missing criteria', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/smart-folder/preview', payload: {} });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toContain('Missing');
+  });
+
+  it('POST /api/smart-folder/create returns 400 for missing fields', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/smart-folder/create', payload: {} });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toContain('Missing');
+  });
+
+  it('POST /api/smart-folder/create returns 400 for empty filePaths', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/smart-folder/create', payload: { folderPath: '/test', filePaths: [] } });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toContain('Missing');
+  });
+
+  // ============================================================
   // Settings (expanded)
   // ============================================================
 

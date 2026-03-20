@@ -80,6 +80,37 @@ export interface FileRecord {
   visionCategory: string | null;
   visionTags: string | null;
   enrichedAt: number | null;
+  // AI Description fields (populated by Describer)
+  aiDescription: string | null;
+  aiCategory: string | null;
+  aiSubcategory: string | null;
+  aiTags: string | null;
+  aiDateContext: string | null;
+  aiSource: string | null;
+  aiContentType: string | null;
+  aiConfidence: number | null;
+  aiSensitive: boolean | null;
+  aiSensitiveType: string | null;
+  aiDetails: string | null;
+  aiDescribedAt: number | null;
+  aiDescriptionModel: string | null;
+}
+
+/** AI Description category */
+export type AICategory = 'financial' | 'work' | 'personal' | 'medical' | 'legal'
+  | 'education' | 'creative' | 'communication' | 'reference' | 'media';
+
+/** AI Content type classification */
+export type AIContentType = 'photo' | 'screenshot' | 'scan' | 'document'
+  | 'spreadsheet' | 'audio' | 'other';
+
+/** Result from batch AI description operation */
+export interface DescriptionResult {
+  described: number;
+  skipped: number;
+  errors: Array<{ path: string; error: string }>;
+  cost: number;
+  durationMs: number;
 }
 
 /** Simplified file info sent to Claude API */
@@ -208,6 +239,10 @@ export interface FileMomConfig {
   enableEmbeddings: boolean;
   embeddingModel: string;
   embeddingDimensions: number;
+  enableAIDescriptions: boolean;
+  descriptionModel: string;
+  descriptionBatchSize: number;
+  descriptionMaxConcurrent: number;
 }
 
 /** Options for refining an existing action plan */
@@ -280,6 +315,73 @@ export interface SearchResult {
   mtime: number;
   score: number;
   snippet: string | null;
+}
+
+export interface BrowseOptions {
+  q?: string;
+  category?: string;
+  contentType?: string;
+  dateContext?: string;
+  source?: string;
+  sensitive?: boolean;
+  tags?: string[];
+  extensions?: string[];
+  folders?: string[];
+  limit?: number;
+  offset?: number;
+}
+
+export interface BrowseResult {
+  id: number;
+  path: string;
+  name: string;
+  extension: string;
+  size: number;
+  mtime: number;
+  aiDescription: string | null;
+  aiCategory: string | null;
+  aiSubcategory: string | null;
+  aiTags: string | null;
+  aiContentType: string | null;
+  aiConfidence: number | null;
+  aiSensitive: boolean;
+  snippet: string | null;
+  score: number | null;
+}
+
+export interface FilterOptions {
+  categories: Array<{ value: string; count: number }>;
+  contentTypes: Array<{ value: string; count: number }>;
+  sources: Array<{ value: string; count: number }>;
+  dateContexts: Array<{ value: string; count: number }>;
+}
+
+export interface FolderInfo {
+  path: string;
+  fileCount: number;
+}
+
+export interface SmartFolderMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface SmartFolderCriteria {
+  q?: string;
+  category?: string;
+  contentType?: string;
+  dateContext?: string;
+  source?: string;
+  sensitive?: boolean;
+  tags?: string[];
+  extensions?: string[];
+}
+
+export interface SmartFolderResponse {
+  message: string;
+  criteria: SmartFolderCriteria | null;
+  matchCount: number;
+  done: boolean;
 }
 
 export interface SemanticSearchOptions {

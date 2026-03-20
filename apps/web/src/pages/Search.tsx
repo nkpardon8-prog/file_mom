@@ -1,12 +1,12 @@
 import { useState, useMemo } from 'react';
-import { Search as SearchIcon, X, ChevronDown, ChevronUp } from 'lucide-react';
-import { useSearch, useStats, useSettings } from '../hooks/useApi';
+import { Search as SearchIcon, X, ChevronDown, ChevronUp, Shield } from 'lucide-react';
+import { useBrowse, useFilterOptions, useStats, useSettings } from '../hooks/useApi';
 import { useDebounce } from '../hooks/useDebounce';
 import { FileDetail } from '../components/FileDetail';
 import { formatSize, formatRelativeTime } from '../lib/utils';
-import type { SearchResult } from '../lib/api';
+import type { BrowseParams, BrowseResult } from '../lib/api';
 
-type SortField = 'score' | 'name' | 'size' | 'mtime';
+type SortField = 'name' | 'size' | 'mtime' | 'score' | 'description';
 
 function truncatePath(path: string, maxLen = 45): string {
   if (path.length <= maxLen) return path;
@@ -25,27 +25,50 @@ function extensionColor(ext: string): string {
   return colors[ext.toLowerCase()] ?? 'bg-indigo-400';
 }
 
+const categoryColors: Record<string, string> = {
+  financial: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300',
+  work: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300',
+  personal: 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300',
+  medical: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300',
+  legal: 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-300',
+  education: 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900 dark:text-cyan-300',
+  creative: 'bg-pink-100 text-pink-800 dark:bg-pink-900 dark:text-pink-300',
+  communication: 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300',
+  reference: 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300',
+  media: 'bg-violet-100 text-violet-800 dark:bg-violet-900 dark:text-violet-300',
+};
+
 export function Search() {
   const [query, setQuery] = useState('');
+  const [category, setCategory] = useState('');
+  const [contentType, setContentType] = useState('');
+  const [dateContext, setDateContext] = useState('');
+  const [source, setSource] = useState('');
+  const [sensitiveOnly, setSensitiveOnly] = useState(false);
   const [selectedExtensions, setSelectedExtensions] = useState<Set<string>>(new Set());
   const [limit, setLimit] = useState(20);
   const [semantic, setSemantic] = useState(false);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
-  const [sortField, setSortField] = useState<SortField>('score');
+  const [sortField, setSortField] = useState<SortField>('mtime');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
 
   const debouncedQuery = useDebounce(query, 300);
-
-  const extParam = selectedExtensions.size > 0 ? Array.from(selectedExtensions).join(',') : undefined;
-  const { data, isLoading, isError, error } = useSearch({
-    q: debouncedQuery,
-    limit,
-    ext: extParam,
-    semantic,
-  });
-
+  const { data: filterOpts } = useFilterOptions();
   const { data: stats } = useStats();
   const { data: settings } = useSettings();
+
+  const browseParams: BrowseParams = useMemo(() => ({
+    q: debouncedQuery || undefined,
+    category: category || undefined,
+    contentType: contentType || undefined,
+    dateContext: dateContext || undefined,
+    source: source || undefined,
+    sensitive: sensitiveOnly || undefined,
+    ext: selectedExtensions.size > 0 ? Array.from(selectedExtensions).join(',') : undefined,
+    limit,
+  }), [debouncedQuery, category, contentType, dateContext, source, sensitiveOnly, selectedExtensions, limit]);
+
+  const { data, isLoading, isError, error } = useBrowse(browseParams);
 
   const topExtensions = useMemo(() => {
     if (!stats?.byExtension) return [];
@@ -55,15 +78,18 @@ export function Search() {
       .map(([ext]) => ext);
   }, [stats]);
 
+  const hasQuery = !!debouncedQuery;
+
   const sortedResults = useMemo(() => {
     if (!data) return [];
     return [...data].sort((a, b) => {
       let cmp = 0;
       switch (sortField) {
-        case 'score': cmp = a.score - b.score; break;
+        case 'score': cmp = (a.score ?? 0) - (b.score ?? 0); break;
         case 'name': cmp = a.name.localeCompare(b.name); break;
         case 'size': cmp = a.size - b.size; break;
         case 'mtime': cmp = a.mtime - b.mtime; break;
+        case 'description': cmp = (a.aiDescription ?? '').localeCompare(b.aiDescription ?? ''); break;
       }
       return sortDirection === 'asc' ? cmp : -cmp;
     });
@@ -74,7 +100,7 @@ export function Search() {
       setSortDirection((d) => (d === 'asc' ? 'desc' : 'asc'));
     } else {
       setSortField(field);
-      setSortDirection(field === 'score' ? 'desc' : 'asc');
+      setSortDirection(field === 'score' ? 'desc' : field === 'mtime' ? 'desc' : 'asc');
     }
   }
 
@@ -87,11 +113,13 @@ export function Search() {
     });
   }
 
+  const hasActiveFilters = category || contentType || dateContext || source || sensitiveOnly || selectedExtensions.size > 0;
+
   function SortHeader({ field, label }: { field: SortField; label: string }) {
     const active = sortField === field;
     return (
       <th
-        className="cursor-pointer select-none px-4 py-3 text-left text-xs font-medium uppercase text-gray-500 hover:text-gray-700"
+        className="cursor-pointer select-none px-4 py-3 text-left text-xs font-medium uppercase text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
         onClick={() => handleSort(field)}
       >
         <span className="inline-flex items-center gap-1">
@@ -102,16 +130,36 @@ export function Search() {
     );
   }
 
-  const showInitial = debouncedQuery.length === 0;
-  const showLoading = isLoading && debouncedQuery.length > 0;
-  const showEmpty = !isLoading && data && data.length === 0 && debouncedQuery.length > 0;
+  function FilterSelect({ value, onChange, placeholder, options }: {
+    value: string;
+    onChange: (v: string) => void;
+    placeholder: string;
+    options: Array<{ value: string; count: number }>;
+  }) {
+    return (
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+      >
+        <option value="">{placeholder}</option>
+        {options.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.value} ({opt.count})
+          </option>
+        ))}
+      </select>
+    );
+  }
+
+  const showEmpty = !isLoading && data && data.length === 0 && (hasQuery || hasActiveFilters);
   const showResults = !isLoading && data && data.length > 0;
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <div className="mx-auto max-w-6xl space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Search</h1>
-        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Search across your indexed files</p>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Search & Browse</h1>
+        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Browse files by AI metadata or search with keywords</p>
       </div>
 
       {/* Search bar */}
@@ -131,9 +179,33 @@ export function Search() {
         )}
       </div>
 
-      {/* Filters */}
+      {/* Filter dropdowns */}
       <div className="flex flex-wrap items-center gap-3">
-        {/* Extension chips */}
+        {filterOpts && (
+          <>
+            <FilterSelect value={category} onChange={setCategory} placeholder="All Categories" options={filterOpts.categories} />
+            <FilterSelect value={contentType} onChange={setContentType} placeholder="All Types" options={filterOpts.contentTypes} />
+            <FilterSelect value={dateContext} onChange={setDateContext} placeholder="All Dates" options={filterOpts.dateContexts} />
+            <FilterSelect value={source} onChange={setSource} placeholder="All Sources" options={filterOpts.sources} />
+          </>
+        )}
+
+        <div className="ml-auto flex items-center gap-3">
+          <select
+            value={limit}
+            onChange={(e) => setLimit(Number(e.target.value))}
+            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+          >
+            <option value={10}>10 results</option>
+            <option value={20}>20 results</option>
+            <option value={50}>50 results</option>
+            <option value={100}>100 results</option>
+          </select>
+        </div>
+      </div>
+
+      {/* Extension chips + toggles */}
+      <div className="flex flex-wrap items-center gap-3">
         <div className="flex flex-wrap gap-1.5">
           {topExtensions.map((ext) => (
             <button
@@ -141,8 +213,8 @@ export function Search() {
               onClick={() => toggleExtension(ext)}
               className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
                 selectedExtensions.has(ext)
-                  ? 'border-indigo-300 bg-indigo-100 text-indigo-700'
-                  : 'border-gray-200 bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  ? 'border-indigo-300 bg-indigo-100 text-indigo-700 dark:border-indigo-600 dark:bg-indigo-900 dark:text-indigo-300'
+                  : 'border-gray-200 bg-gray-100 text-gray-600 hover:bg-gray-200 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-400'
               }`}
             >
               .{ext}
@@ -151,23 +223,24 @@ export function Search() {
         </div>
 
         <div className="ml-auto flex items-center gap-3">
-          {/* Limit */}
-          <select
-            value={limit}
-            onChange={(e) => setLimit(Number(e.target.value))}
-            className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm"
+          {/* Sensitive toggle */}
+          <button
+            onClick={() => setSensitiveOnly(!sensitiveOnly)}
+            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
+              sensitiveOnly
+                ? 'border-red-300 bg-red-100 text-red-700 dark:border-red-600 dark:bg-red-900 dark:text-red-300'
+                : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300'
+            }`}
           >
-            <option value={10}>10 results</option>
-            <option value={20}>20 results</option>
-            <option value={50}>50 results</option>
-            <option value={100}>100 results</option>
-          </select>
+            <Shield className="h-3.5 w-3.5" />
+            Sensitive
+          </button>
 
           {/* Semantic toggle */}
-          <div className="inline-flex rounded-lg border border-gray-300 text-sm">
+          <div className="inline-flex rounded-lg border border-gray-300 text-sm dark:border-gray-600">
             <button
               onClick={() => setSemantic(false)}
-              className={`rounded-l-lg px-3 py-1.5 ${!semantic ? 'bg-indigo-600 text-white' : 'bg-white text-gray-700'}`}
+              className={`rounded-l-lg px-3 py-1.5 ${!semantic ? 'bg-indigo-600 text-white' : 'bg-white text-gray-700 dark:bg-gray-800 dark:text-gray-300'}`}
             >
               Keyword
             </button>
@@ -175,7 +248,7 @@ export function Search() {
               onClick={() => setSemantic(true)}
               disabled={!settings?.enableEmbeddings}
               title={!settings?.enableEmbeddings ? 'Embeddings not enabled' : undefined}
-              className={`rounded-r-lg px-3 py-1.5 ${semantic ? 'bg-indigo-600 text-white' : 'bg-white text-gray-700'} disabled:cursor-not-allowed disabled:opacity-50`}
+              className={`rounded-r-lg px-3 py-1.5 ${semantic ? 'bg-indigo-600 text-white' : 'bg-white text-gray-700 dark:bg-gray-800 dark:text-gray-300'} disabled:cursor-not-allowed disabled:opacity-50`}
             >
               Semantic
             </button>
@@ -183,24 +256,16 @@ export function Search() {
         </div>
       </div>
 
-      {/* Initial state */}
-      {showInitial && (
-        <div className="flex flex-col items-center justify-center py-24 text-center">
-          <SearchIcon className="h-12 w-12 text-gray-300" />
-          <p className="mt-4 text-sm text-gray-500">Enter a search query to find files</p>
-        </div>
-      )}
-
       {/* Loading */}
-      {showLoading && (
+      {isLoading && (
         <div className="space-y-3">
           {[...Array(4)].map((_, i) => (
-            <div key={i} className="animate-pulse rounded-lg border border-gray-200 bg-white p-4">
+            <div key={i} className="animate-pulse rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
               <div className="flex items-center gap-4">
-                <div className="h-4 w-48 rounded bg-gray-200" />
-                <div className="h-4 w-32 rounded bg-gray-200" />
+                <div className="h-4 w-48 rounded bg-gray-200 dark:bg-gray-700" />
+                <div className="h-4 w-32 rounded bg-gray-200 dark:bg-gray-700" />
                 <div className="flex-1" />
-                <div className="h-4 w-16 rounded bg-gray-200" />
+                <div className="h-4 w-16 rounded bg-gray-200 dark:bg-gray-700" />
               </div>
             </div>
           ))}
@@ -208,8 +273,8 @@ export function Search() {
       )}
 
       {/* Error */}
-      {isError && debouncedQuery.length > 0 && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+      {isError && (
+        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-800 dark:bg-red-900/30 dark:text-red-400">
           Search failed: {error instanceof Error ? error.message : 'Unknown error'}
         </div>
       )}
@@ -217,9 +282,9 @@ export function Search() {
       {/* Empty */}
       {showEmpty && (
         <div className="flex flex-col items-center justify-center py-24 text-center">
-          <SearchIcon className="h-12 w-12 text-gray-300" />
-          <p className="mt-4 text-sm text-gray-500">
-            No results found for "<span className="font-medium text-gray-700">{debouncedQuery}</span>". Try different search terms.
+          <SearchIcon className="h-12 w-12 text-gray-300 dark:text-gray-600" />
+          <p className="mt-4 text-sm text-gray-500 dark:text-gray-400">
+            No files match the current filters. Try adjusting your criteria.
           </p>
         </div>
       )}
@@ -231,14 +296,15 @@ export function Search() {
             <thead className="bg-gray-50 dark:bg-gray-900">
               <tr>
                 <SortHeader field="name" label="Name" />
-                <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Path</th>
+                <SortHeader field="description" label="Description" />
+                <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Category</th>
                 <SortHeader field="size" label="Size" />
                 <SortHeader field="mtime" label="Modified" />
-                <SortHeader field="score" label="Score" />
+                {hasQuery && <SortHeader field="score" label="Score" />}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-              {sortedResults.map((result) => (
+              {sortedResults.map((result: BrowseResult) => (
                 <tr
                   key={result.id}
                   onClick={() => setSelectedFilePath(result.path)}
@@ -246,8 +312,8 @@ export function Search() {
                 >
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
-                      <span className={`h-2.5 w-2.5 rounded-full ${extensionColor(result.extension)}`} />
-                      <span className="text-sm font-medium text-gray-900">{result.name}</span>
+                      <span className={`h-2.5 w-2.5 flex-shrink-0 rounded-full ${extensionColor(result.extension)}`} />
+                      <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{result.name}</span>
                     </div>
                     {result.snippet && (
                       <p className="mt-0.5 truncate pl-[18px] text-xs text-gray-400" title={result.snippet}>
@@ -255,22 +321,41 @@ export function Search() {
                       </p>
                     )}
                   </td>
-                  <td className="px-4 py-3 font-mono text-xs text-gray-500" title={result.path}>
-                    {truncatePath(result.path)}
+                  <td className="max-w-[200px] px-4 py-3">
+                    {result.aiDescription ? (
+                      <p className="truncate text-xs text-gray-500 dark:text-gray-400" title={result.aiDescription}>
+                        {result.aiDescription}
+                      </p>
+                    ) : (
+                      <span className="text-xs text-gray-300 dark:text-gray-600">—</span>
+                    )}
                   </td>
-                  <td className="px-4 py-3 text-right text-sm text-gray-500">{formatSize(result.size)}</td>
-                  <td className="px-4 py-3 text-sm text-gray-500">
+                  <td className="px-4 py-3">
+                    {result.aiCategory && (
+                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${categoryColors[result.aiCategory] ?? 'bg-gray-100 text-gray-800'}`}>
+                        {result.aiCategory}
+                      </span>
+                    )}
+                    {result.aiConfidence != null && result.aiConfidence < 0.5 && (
+                      <span className="ml-1 rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-700 dark:bg-amber-900 dark:text-amber-300">unsure</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-right text-sm text-gray-500 dark:text-gray-400">{formatSize(result.size)}</td>
+                  <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
                     {formatRelativeTime(new Date(result.mtime).toISOString())}
                   </td>
-                  <td className="px-4 py-3 text-right text-sm font-medium text-gray-600">
-                    {result.score.toFixed(2)}
-                  </td>
+                  {hasQuery && (
+                    <td className="px-4 py-3 text-right text-sm font-medium text-gray-600 dark:text-gray-400">
+                      {result.score?.toFixed(2) ?? '—'}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
           </table>
-          <div className="border-t border-gray-200 bg-gray-50 px-4 py-2 text-xs text-gray-500">
+          <div className="border-t border-gray-200 bg-gray-50 px-4 py-2 text-xs text-gray-500 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400">
             {sortedResults.length} result{sortedResults.length !== 1 ? 's' : ''}
+            {hasActiveFilters && ' (filtered)'}
           </div>
         </div>
       )}

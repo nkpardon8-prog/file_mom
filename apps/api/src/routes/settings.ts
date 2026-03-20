@@ -26,6 +26,9 @@ const EDITABLE_FIELDS: Record<string, 'string' | 'number' | 'boolean' | 'string[
   maxConcurrentOps: 'number',
   undoTTLMinutes: 'number',
   maxRefinementRounds: 'number',
+  enableAIDescriptions: 'boolean',
+  descriptionModel: 'string',
+  descriptionBatchSize: 'number',
 };
 
 function maskKey(key: string | undefined): string | null {
@@ -95,9 +98,10 @@ export async function settingsRoutes(app: FastifyInstance): Promise<void> {
 
     // Hot-reload feature flags if they changed
     const fm = (app as any).fm as FileMom;
-    const flagUpdates: { enableVisionEnrichment?: boolean; enableEmbeddings?: boolean } = {};
+    const flagUpdates: { enableVisionEnrichment?: boolean; enableEmbeddings?: boolean; enableAIDescriptions?: boolean } = {};
     if (updatedFields.includes('enableVisionEnrichment')) flagUpdates.enableVisionEnrichment = config.enableVisionEnrichment as boolean;
     if (updatedFields.includes('enableEmbeddings')) flagUpdates.enableEmbeddings = config.enableEmbeddings as boolean;
+    if (updatedFields.includes('enableAIDescriptions')) flagUpdates.enableAIDescriptions = config.enableAIDescriptions as boolean;
     if (Object.keys(flagUpdates).length > 0) {
       await fm.updateFeatureFlags(flagUpdates);
     }

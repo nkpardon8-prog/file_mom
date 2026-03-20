@@ -22,13 +22,21 @@ const DOCX_EXTS = new Set(['docx']);
 const AUDIO_EXTS = new Set([
   'mp3', 'flac', 'wav', 'aac', 'm4a', 'ogg', 'wma', 'opus', 'aiff', 'aif',
 ]);
+const SPREADSHEET_EXTS = new Set(['xlsx', 'xls', 'xlsm', 'csv', 'tsv', 'ods']);
 
-function mimeCategory(mime: string | undefined): 'image' | 'pdf' | 'docx' | 'audio' | null {
+function mimeCategory(mime: string | undefined): 'image' | 'pdf' | 'docx' | 'audio' | 'spreadsheet' | null {
   if (!mime) return null;
   if (mime.startsWith('image/')) return 'image';
   if (mime === 'application/pdf') return 'pdf';
   if (mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return 'docx';
   if (mime.startsWith('audio/')) return 'audio';
+  if (
+    mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+    mime === 'application/vnd.ms-excel' ||
+    mime === 'text/csv' ||
+    mime === 'text/tab-separated-values' ||
+    mime === 'application/vnd.oasis.opendocument.spreadsheet'
+  ) return 'spreadsheet';
   return null;
 }
 
@@ -126,6 +134,8 @@ export class Extractor {
       base.extractedText = await this._extractDocx(filePath);
     } else if (category === 'audio' || (!category && AUDIO_EXTS.has(ext))) {
       base.extractedText = await this._extractAudio(filePath);
+    } else if (category === 'spreadsheet' || (!category && SPREADSHEET_EXTS.has(ext))) {
+      base.extractedText = await this._extractSpreadsheet(filePath);
     }
 
     return base;
@@ -206,6 +216,56 @@ export class Extractor {
       if (!text) return null;
       if (text.length > this._config.maxTextLength) {
         return text.slice(0, this._config.maxTextLength);
+      }
+      return text;
+    } catch {
+      return null;
+    }
+  }
+
+  private async _extractSpreadsheet(filePath: string): Promise<string | null> {
+    try {
+      const XLSX = await import('xlsx');
+      const workbook = XLSX.readFile(filePath, { sheetRows: 20 });
+
+      const parts: string[] = [];
+
+      for (const sheetName of workbook.SheetNames) {
+        const sheet = workbook.Sheets[sheetName];
+        const rows: string[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+
+        if (rows.length === 0) continue;
+
+        const rangeRef = sheet['!fullref'] ?? sheet['!ref'];
+        const totalRows = rangeRef
+          ? parseInt(XLSX.utils.decode_range(rangeRef).e.r.toString(), 10) + 1
+          : rows.length;
+
+        const headers = rows[0].map((h: unknown) => String(h).trim()).filter(Boolean);
+        if (headers.length === 0) continue;
+
+        parts.push(`Sheet: ${sheetName} (${totalRows} rows)`);
+        parts.push(`Columns: ${headers.join(', ')}`);
+
+        const dataRows = rows.slice(1, 11);
+        if (dataRows.length > 0) {
+          parts.push('Sample data:');
+          for (const row of dataRows) {
+            const cells = row.map((c: unknown) => String(c ?? '').trim());
+            const line = cells.join(' | ');
+            if (line.replace(/[| ]/g, '')) {
+              parts.push(`  ${line}`);
+            }
+          }
+        }
+
+        parts.push('');
+      }
+
+      let text = parts.join('\n').trim();
+      if (!text) return null;
+      if (text.length > this._config.maxTextLength) {
+        text = text.slice(0, this._config.maxTextLength);
       }
       return text;
     } catch {

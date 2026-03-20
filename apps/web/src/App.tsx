@@ -6,12 +6,14 @@ import { Plan } from './pages/Plan';
 import { Undo } from './pages/Undo';
 import { Enrich } from './pages/Enrich';
 import { Settings } from './pages/Settings';
+import { Browser } from './pages/Browser';
 
 export function App() {
   return (
     <Routes>
       <Route element={<Layout />}>
         <Route index element={<Dashboard />} />
+        <Route path="browser" element={<Browser />} />
         <Route path="search" element={<Search />} />
         <Route path="plan" element={<Plan />} />
         <Route path="enrich" element={<Enrich />} />

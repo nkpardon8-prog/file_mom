@@ -12,6 +12,9 @@ import { planRoutes } from './routes/plan.js';
 import { executeRoutes } from './routes/execute.js';
 import { undoRoutes } from './routes/undo.js';
 import { enrichRoutes } from './routes/enrich.js';
+import { describeRoutes } from './routes/describe.js';
+import { folderRoutes } from './routes/folders.js';
+import { smartFolderRoutes } from './routes/smart-folder.js';
 import { watchRestRoutes, watchWsRoutes } from './routes/watch.js';
 
 export async function buildApp(fm: FileMom, opts?: { logger?: boolean }) {
@@ -37,6 +40,9 @@ export async function buildApp(fm: FileMom, opts?: { logger?: boolean }) {
   await app.register(executeRoutes, { prefix: '/api' });
   await app.register(undoRoutes, { prefix: '/api' });
   await app.register(enrichRoutes, { prefix: '/api' });
+  await app.register(describeRoutes, { prefix: '/api' });
+  await app.register(folderRoutes, { prefix: '/api' });
+  await app.register(smartFolderRoutes, { prefix: '/api' });
   await app.register(watchRestRoutes, { prefix: '/api' });
   await app.register(watchWsRoutes);
 

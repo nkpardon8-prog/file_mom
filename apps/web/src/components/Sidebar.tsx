@@ -1,10 +1,11 @@
 import { NavLink } from 'react-router';
-import { LayoutDashboard, Search, Sparkles, Eye, Undo2, Settings as SettingsIcon, FolderHeart, Loader2, Sun, Moon, Monitor } from 'lucide-react';
+import { LayoutDashboard, Search, Sparkles, Eye, Undo2, Settings as SettingsIcon, FolderHeart, FolderOpen, Loader2, Sun, Moon, Monitor } from 'lucide-react';
 import { useHealth, useWatcherStatus, useWatcherStart, useWatcherStop } from '../hooks/useApi';
 import { useTheme } from '../hooks/useTheme';
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
+  { to: '/browser', icon: FolderOpen, label: 'Browser' },
   { to: '/search', icon: Search, label: 'Search' },
   { to: '/plan', icon: Sparkles, label: 'Organize' },
   { to: '/enrich', icon: Eye, label: 'Enrich' },
