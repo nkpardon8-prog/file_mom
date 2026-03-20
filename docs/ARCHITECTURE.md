@@ -51,8 +51,8 @@ The backend is designed to be consumed by:
 │  │                      PHASE 2: SEMANTIC LAYER                          │   │
 │  │                                                                       │   │
 │  │   ┌──────────────┐    ┌─────────────────┐    ┌──────────────────┐   │   │
-│  │   │  Embeddings  │───►│    LanceDB      │───►│ Semantic Search  │   │   │
-│  │   │(Transformers)│    │  (vectors)      │    │   (pre-filter)   │   │   │
+│  │   │  Embeddings  │───►│   sqlite-vec    │───►│  Hybrid Search   │   │   │
+│  │   │(Transformers)│    │  (same SQLite)  │    │ (FTS5 + vector)  │   │   │
 │  │   └──────────────┘    └─────────────────┘    └──────────────────┘   │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                                                                              │
@@ -87,23 +87,56 @@ The backend is designed to be consumed by:
 **Purpose**: Extract metadata from files based on type.
 
 **Responsibilities**:
+- MIME-type detection via magic bytes (`file-type`) for correct extractor routing
 - EXIF extraction from images (JPEG, PNG, HEIC, etc.)
-- Text extraction from PDFs (first 3 pages, max 10KB)
+- Text extraction from PDFs (max 10KB)
 - Text extraction from DOCX/Word documents
+- Audio metadata extraction (artist, album, genre, duration, etc.)
 - Graceful fallback for unsupported types (filename + stats only)
 - Cache extraction results (skip unchanged files)
 
 **Libraries**:
 | File Type | Library | Notes |
 |-----------|---------|-------|
-| Images | `exifreader` | Pure JS, no native deps |
-| PDF | `pdf-parse` | Pure JS, based on pdf.js |
+| Detection | `file-type` | Magic-byte MIME detection, routes misnamed files correctly |
+| Images | `exifr` | Pure JS, 4x faster than exifreader, zero deps |
+| PDF | `unpdf` | Pure JS, uses PDF.js v5.4, maintained by UnJS team |
 | DOCX | `mammoth` | Pure JS, extracts raw text |
+| Audio | `music-metadata` | Pure JS, 23+ formats (MP3, FLAC, WAV, AAC, etc.) |
 
 **Input**: File path
 **Output**: `ExtractedMetadata` object
 
 **Performance Target**: 100 files/second for metadata-only, 10 files/second for full text extraction
+
+---
+
+### 2.5. Vision Enricher
+
+**Purpose**: Visually understand files that lack sufficient metadata using Claude Vision.
+
+**Responsibilities**:
+- Identify files needing visual analysis (images without EXIF, screenshots, scanned PDFs)
+- Preprocess images (resize to 1024px max, convert HEIC → JPEG)
+- Send files to Claude Vision API via Batch API (50% discount)
+- Store structured descriptions, categories, and tags in the file index
+- Tiered model selection: Haiku for simple images, Sonnet for complex documents
+
+**Triage Logic**:
+- Image/screenshot with no EXIF GPS/date or generic filename (IMG_*, Screenshot*) → VLM
+- PDF with extracted text < 50 chars (likely scanned) → VLM
+- All other files → skip VLM (metadata is sufficient)
+
+**Claude Vision Integration**:
+- Model: Claude Haiku (default, via Batch API) or Claude Sonnet (complex files)
+- Output: Structured JSON (description, category, tags, confidence)
+- Preprocessing: Resize to max 1024px on longest edge (~700-1000 tokens/image)
+- Batch API: Background processing within 24 hours at 50% token discount
+
+**Input**: File path (image, screenshot, or scanned PDF)
+**Output**: `VisionResult` object (description, category, tags, confidence)
+
+**Cost**: ~$0.60/1000 images via Haiku Batch API
 
 ---
 
@@ -154,22 +187,26 @@ The backend is designed to be consumed by:
 
 **Responsibilities**:
 - Pre-filter file index to relevant subset (keyword match)
-- Construct Claude prompt with file context
-- Parse and validate Claude's JSON response via Zod
+- Construct prompt with file context
+- Parse and validate AI response JSON via Zod
 - Handle API errors and rate limits
 - Support streaming responses (for UI progress)
 
-**Claude Integration**:
-- Model: Claude Sonnet 4 (balance of speed/quality)
-- Output: Structured JSON via `output_config.format`
+**AI Integration (OpenRouter via OpenAI SDK)**:
+- Provider: OpenRouter (single API key for all models)
+- Default model: `anthropic/claude-sonnet-4` (balance of speed/quality)
+- Output: Structured JSON validated by Zod
 - Max files per request: 500 (to stay within token limits)
-- Retry logic: 3 attempts with exponential backoff
+- Retry logic: handled natively by OpenAI SDK
 
-**Pre-filtering Strategy**:
-1. Keyword extraction from user command
-2. FTS5 search on filename + extracted text
-3. Path substring matching
-4. Return top 500 most relevant files
+**Pre-filtering Strategy (AI-Powered Query Expansion)**:
+1. AI expansion call: user command + folder structure + index stats → expanded keywords, folder patterns, extension filters
+2. Multi-query FTS5 search: each expanded keyword searched separately
+3. Folder path matching: each folder pattern matched via LIKE on file paths
+4. Results merged, deduplicated, capped at maxFilesPerRequest (500)
+5. Expansion reasoning shown to user for transparency
+
+This two-call approach (expand → search → plan) finds project-related files that a single keyword search would miss.
 
 ---
 
@@ -223,14 +260,15 @@ The backend is designed to be consumed by:
 **Purpose**: Enable semantic search for better file matching.
 
 **Responsibilities**:
-- Generate embeddings for file metadata + extracted text
-- Store embeddings in LanceDB
-- Support semantic similarity search
+- Generate embeddings for file metadata + extracted text + vision descriptions
+- Store embeddings in the same SQLite database via sqlite-vec extension
+- Support hybrid search combining FTS5 keyword scores with vector cosine similarity
 - Integrate with pre-filter step in AI Interface
 
 **Strategy**: Hybrid approach
-- **Text embeddings**: Transformers.js with `all-MiniLM-L6-v2` (local, free)
-- **Image understanding**: Claude Vision API (only for photos without useful EXIF)
+- **Text embeddings**: Transformers.js with `all-MiniLM-L6-v2` (local, free, 384 dimensions)
+- **Vector storage**: sqlite-vec extension in existing SQLite DB (no second storage engine)
+- **Hybrid search**: Combine FTS5 keyword relevance with cosine similarity for best results
 
 ---
 
@@ -250,6 +288,12 @@ User selects folders
 ┌───────────────┐
 │   Extractor   │ ──► Adds: quickHash, extractedText, exifData
 └───────┬───────┘
+        │
+        ▼
+┌───────────────┐
+│    Vision     │ ──► Adds: visionDescription, visionCategory, visionTags
+│   Enricher    │     (only for files with insufficient metadata)
+└───────┬───────┘     Uses Claude Vision Batch API
         │
         ▼
 ┌───────────────┐
@@ -290,6 +334,27 @@ User: "organize my Hawaii photos"
 │  Return Plan  │ ──► To UI for user approval
 └───────────────┘
 
+        ... CONFIRMATION STAGE ...
+
+  ┌─────────────────────────────────────────┐
+  │         CONFIRMATION STAGE              │
+  │                                         │
+  │  Show plan to user:                     │
+  │  - Files affected, destinations         │
+  │  - Confidence levels per action         │
+  │  - Low-confidence actions highlighted   │
+  │  - Warnings                             │
+  │                                         │
+  │  User options:                          │
+  │  [Approve] [Give Feedback] [Cancel]     │
+  │                                         │
+  │  If feedback (max 3 rounds):            │
+  │    → refinePlan() with user feedback    │
+  │    → Claude regenerates plan            │
+  │    → Show updated plan                  │
+  │    → Loop                               │
+  └─────────────────────────────────────────┘
+
         ... user approves ...
 
         │
@@ -309,6 +374,65 @@ User: "organize my Hawaii photos"
 │    Return     │ ──► ExecutionResult with success/failure
 └───────────────┘
 ```
+
+### Smart Folder Flow (Guided)
+
+A button-driven alternative to the freeform command flow. Instead of the user typing a command and hoping the AI gets it right, this is a guided, multi-turn conversation with preview-before-execute.
+
+```
+User clicks "Create Folder with AI"
+        │
+        ▼
+┌───────────────┐
+│   UI Prompt   │ ──► "What kind of files should go in this folder?"
+└───────┬───────┘
+        │
+        ▼
+User: "tax documents"
+        │
+        ▼
+┌───────────────┐
+│  Pre-Filter   │ ──► Keywords: "tax", "documents"
+│  + Sample     │     FTS5 search + path matching
+└───────┬───────┘     Returns: 3-5 representative files
+        │
+        ▼
+┌───────────────┐
+│  Confirm      │ ──► "Are these the right kind of files?"
+│  (show samples)│    Shows: tax_2023.pdf, W2_acme.pdf, receipt.pdf
+└───────┬───────┘
+        │
+    ┌───┴───┐
+    │  No   │ ──► User: "yes but not receipts"
+    └───┬───┘     Loop back to Pre-Filter with refined query
+        │
+    ┌───┴───┐
+    │  Yes  │
+    └───┬───┘
+        │
+        ▼
+┌───────────────┐
+│ AI Interface  │ ──► Name the folder, generate ActionPlan
+│  (Claude)     │     Small context (only confirmed file set)
+└───────┬───────┘
+        │
+        ▼
+┌───────────────┐
+│   Executor    │ ──► Create folder, move files, log transactions
+└───────┬───────┘
+        │
+        ▼
+┌───────────────┐
+│    Return     │ ──► Undo available for 30 minutes
+└───────────────┘
+```
+
+**Key differences from Command Flow:**
+- Guided (button → questions) vs freeform (blank text box)
+- Preview loop catches mistakes *before* execution, not after
+- Each Claude call is small (3-5 sample files, not 500)
+- Bounded conversation (2-3 rounds max)
+- More approachable for non-technical users
 
 ---
 
@@ -360,13 +484,23 @@ interface FileMomConfig {
   extractionTimeout: number;    // Per-file timeout ms (default: 5000)
 
   // AI
-  anthropicApiKey: string;
-  model: string;                // default: 'claude-sonnet-4-20250514'
+  openRouterApiKey: string;
+  model: string;                // default: 'anthropic/claude-sonnet-4'
   maxFilesPerRequest: number;   // default: 500
 
   // Execution
   undoTTLMinutes: number;       // default: 30
   maxConcurrentOps: number;     // default: 20
+
+  // Vision enrichment
+  enableVisionEnrichment: boolean;  // default: true
+  visionModel: string;              // default: 'anthropic/claude-haiku-4.5'
+  visionMaxImageDimension: number;  // default: 1024
+  visionBatchSize: number;          // default: 50
+  visionMinTextThreshold: number;   // default: 50
+
+  // Plan refinement
+  maxRefinementRounds: number;      // default: 3
 
   // Phase 2
   enableEmbeddings: boolean;    // default: false
@@ -438,13 +572,20 @@ interface FileMomConfig {
 
 ### Phase 2: Semantic Search
 - Transformers.js for local embeddings
-- LanceDB for vector storage
-- Hybrid search (keyword + semantic)
+- sqlite-vec for vector storage (same SQLite database, no separate engine)
+- Hybrid search combining FTS5 keyword relevance with vector cosine similarity
+
+### Smart Folder Workflow
+- Guided "Create Folder with AI" button flow
+- Sample-and-confirm loop before execution
+- Multi-turn refinement with user feedback
+- AI-generated folder naming
 
 ### Phase 3: Intelligence
 - Learning from user corrections
 - Proactive suggestions
 - Multi-step operations
+- VLM enrichment (Phase 1) provides the foundation for visual understanding features
 
 ### Potential Optimizations
 - Worker threads for extraction

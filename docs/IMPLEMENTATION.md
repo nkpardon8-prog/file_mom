@@ -76,18 +76,22 @@ filemom/
 ```json
 {
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.30.0",
+    "openai": "^4.0.0",
     "better-sqlite3": "^11.0.0",
     "chokidar": "^3.6.0",
-    "exifreader": "^4.14.0",
-    "fast-glob": "^3.3.2",
-    "fs-extra": "^11.2.0",
-    "mammoth": "^1.6.0",
-    "pdf-parse": "^1.1.1",
+    "exifr": "^7.1.3",
+    "fast-glob": "^3.3.3",
+    "file-type": "^19.6.0",
+    "mammoth": "^1.12.0",
+    "music-metadata": "^11.0.0",
+    "unpdf": "^0.12.0",
     "xxhash-wasm": "^1.0.2",
     "zod": "^3.22.0",
     "p-limit": "^5.0.0",
-    "p-retry": "^6.2.0"
+    "p-retry": "^6.2.0",
+    "sharp": "^0.33.0",
+    "sqlite-vec": "^0.1.0",
+    "@huggingface/transformers": "^3.0.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.8",
@@ -160,17 +164,22 @@ filemom/
 **Extractor (extractor.ts)**
 - [ ] Implement `Extractor` class
 - [ ] xxHash implementation for quick hashing
-- [ ] EXIF extraction with `exifreader`
-- [ ] PDF text extraction with `pdf-parse`
+- [ ] EXIF extraction with `exifr`
+- [ ] PDF text extraction with `unpdf`
 - [ ] DOCX text extraction with `mammoth`
+- [ ] Audio metadata extraction with `music-metadata`
+- [ ] MIME-type detection with `file-type`
 - [ ] Timeout handling per file
 - [ ] Error handling (return null metadata, not throw)
+- [ ] Flag files with insufficient metadata (`needsVisionEnrichment` field)
+- [ ] Image format detection for VLM triage (HEIC, scanned PDF, generic filenames)
 - [ ] Write unit tests with sample files
 
 **Utilities**
 - [ ] `utils/hash.ts` - xxHash wrapper
 - [ ] `utils/path.ts` - Path normalization, validation
 - [ ] `utils/fs.ts` - Safe file operations
+- [ ] `sharp` integration for image resizing and format conversion
 
 #### Deliverables
 
@@ -196,6 +205,52 @@ const metadata = await extractor.extract('/path/to/file.pdf');
 
 ---
 
+### Phase 1.5: Vision Enrichment (Days 3-4)
+
+**Goal:** Visually understand files that lack sufficient metadata using Claude Vision.
+
+#### Tasks
+
+**VisionEnricher (vision.ts)**
+- [ ] Implement `VisionEnricher` class
+- [ ] Claude Vision API integration via OpenRouter (OpenAI SDK)
+- [ ] Batch API support for background processing (50% discount)
+- [ ] Image preprocessing with `sharp` (resize to 1024px max, HEIC → JPEG)
+- [ ] Triage logic: determine which files need VLM based on metadata quality
+- [ ] Vision system prompt and structured JSON output schema
+- [ ] Tiered model selection (Haiku default, Sonnet for complex files)
+- [ ] Rate limiting and error handling
+- [ ] Write unit tests with mocked Claude Vision responses
+
+**Triage Rules:**
+- Image/screenshot with no EXIF GPS/date or generic filename → VLM (Haiku)
+- PDF with extracted text < 50 chars (likely scanned) → VLM (Haiku)
+- Image flagged as complex (large, multi-page) → VLM (Sonnet)
+- All other files → skip VLM
+
+#### Deliverables
+
+```typescript
+const enricher = new VisionEnricher(config);
+const result = await enricher.enrich('/path/to/IMG_4523.jpg');
+// → { description: "Beach sunset with two people", category: "photo", tags: ["beach", "sunset"], confidence: 0.95 }
+
+// Batch enrichment via Batch API
+const results = await enricher.enrichBatch(filePaths);
+```
+
+#### Tests
+
+- VLM triage correctly identifies metadata-poor files
+- Images resized to max 1024px before API call
+- HEIC files converted to JPEG
+- Structured response validates against schema
+- Batch API used for background enrichment
+- Files with good EXIF/text are skipped
+- API errors handled gracefully (retry, then skip)
+
+---
+
 ### Phase 2: Indexer + SQLite (Days 4-5)
 
 **Goal:** Persistent file index with search.
@@ -215,10 +270,17 @@ const metadata = await extractor.extract('/path/to/file.pdf');
 - [ ] `getRecent()` - recently modified files
 - [ ] `getStats()` - index statistics
 - [ ] Implement FTS5 triggers for sync
+- [ ] Add `vision_description`, `vision_category`, `vision_tags`, `enriched_at` columns
+- [ ] Update FTS5 virtual table to include `vision_description`
+- [ ] Update FTS5 triggers to sync `vision_description`
+- [ ] Load `sqlite-vec` extension on database init
+- [ ] Create `file_embeddings` virtual table (`vec0`, 384 dimensions)
+- [ ] Index for `enriched_at` column (finding unenriched files)
 - [ ] Write unit tests
 
 **Integration**
-- [ ] Connect Scanner → Extractor → Indexer pipeline
+- [ ] Connect Scanner → Extractor → Indexer → VisionEnricher pipeline
+- [ ] Vision enrichment runs in background after indexing
 - [ ] Implement `scan()` method on main class
 - [ ] Incremental updates (only re-extract changed files)
 
@@ -239,6 +301,49 @@ const results = await indexer.search('tax documents');
 - FTS5 search returns relevant results
 - Incremental scan only processes changed files
 - Index survives restart
+
+---
+
+### Phase 2.5: Semantic Embeddings (Days 5-6)
+
+**Goal:** Enable meaning-based file search using local embeddings and sqlite-vec.
+
+#### Tasks
+
+**Embeddings (embeddings.ts) — Full Rewrite**
+- [ ] Remove LanceDB references, rewrite for sqlite-vec
+- [ ] Transformers.js integration with `all-MiniLM-L6-v2` model
+- [ ] sqlite-vec extension loading and `file_embeddings` table management
+- [ ] Embedding generation pipeline: combine `name + extracted_text + vision_description + vision_tags`
+- [ ] `embed(fileId, text)` — generate and store single embedding
+- [ ] `search(query, options)` — vector similarity search
+- [ ] `hybridSearch(query, options)` — combine FTS5 keyword + vector cosine similarity
+- [ ] Batch embedding generation for initial index build
+- [ ] Model caching (download once, cache to disk)
+- [ ] Write unit tests
+
+#### Deliverables
+
+```typescript
+const embeddings = new Embeddings({
+  model: 'all-MiniLM-L6-v2',
+  dimensions: 384,
+  dbPath: '~/.filemom/index.db',
+});
+
+await embeddings.initialize();
+await embeddings.embed(fileId, 'beach sunset photo with two people');
+const results = await embeddings.hybridSearch('vacation pictures', { limit: 20 });
+```
+
+#### Tests
+
+- Embedding generation produces 384-dim vectors
+- sqlite-vec stores and retrieves embeddings correctly
+- Vector search returns semantically similar results
+- Hybrid search combines FTS5 and vector scores
+- Model loads from cache after first download
+- Handles files with no text gracefully
 
 ---
 
@@ -307,7 +412,7 @@ await watcher.start();
 
 **AI Interface (ai.ts)**
 - [ ] Implement `AIInterface` class
-- [ ] Anthropic SDK integration
+- [ ] OpenRouter integration via OpenAI SDK
 - [ ] System prompt construction
 - [ ] User prompt template
 - [ ] File index serialization (for Claude context)
@@ -317,11 +422,19 @@ await watcher.start();
 - [ ] Retry logic with exponential backoff
 - [ ] Error handling (rate limits, timeouts)
 - [ ] Token estimation (don't exceed limits)
+- [ ] Implement `refinePlan()` method for conversational plan refinement
+- [ ] Refinement system prompt and prompt template
+- [ ] Plan session tracking (feedback history, round counting)
+- [ ] Max refinement rounds enforcement (default: 3)
+- [ ] Update pre-filter to use hybrid search (FTS5 + sqlite-vec) when embeddings enabled
 
 **CLI Integration**
-- [ ] Implement `filemom plan <command>` command
-- [ ] Display action plan nicely
-- [ ] Confirmation prompt
+- [ ] Implement interactive `filemom plan` command with confirmation stage
+- [ ] Plan presentation: table view with files, actions, confidence, warnings
+- [ ] Prompt: `Approve? [y/n/feedback]`
+- [ ] Feedback loop: capture text → call refinePlan() → show updated plan
+- [ ] Max 3 refinement rounds, then force approve/cancel
+- [ ] `--save plan.json` flag to save without executing
 
 #### Deliverables
 
@@ -442,20 +555,49 @@ Full E2E flow:
 
 ---
 
+## Smart Folder Feature (Across Phases)
+
+The "Create Folder with AI" guided workflow is built incrementally on top of existing components.
+
+### Phase 2 Addition: `sampleFiles()`
+
+- [ ] `Indexer.sampleFiles(query, options)` — search index and return 3-5 representative files
+- [ ] Sampling strategy: pick files from different folders/dates for diversity
+- [ ] Unit tests for sampling logic
+
+### Phase 5 Addition: Refinement AI
+
+- [ ] Parse user feedback into refined search criteria ("not receipts" → exclude receipts)
+- [ ] AI-generated folder name from confirmed file set
+- [ ] Small-context Claude calls (sample files only, not full index)
+- [ ] Unit tests for refinement parsing
+- [ ] Leverage same `refinePlan()` infrastructure for Smart Folder refinement
+
+### Phase 7 Addition: `SmartFolderSession` Orchestration
+
+- [ ] `SmartFolderSession` class — ties sampling, refinement, and planning together
+- [ ] `filemom.startSmartFolder()` API method
+- [ ] Session state management (history, exclusions, matched files)
+- [ ] `session.refine()` → search + sample + suggest folder name
+- [ ] `session.confirm()` → generate ActionPlan from confirmed set
+- [ ] `filemom create-folder` CLI command (interactive)
+- [ ] Integration tests for full guided flow
+- [ ] E2E test: refine → confirm → execute → undo
+
+---
+
 ## Phase 2: Semantic Search (Future)
 
 ### Tasks
 
 **Embeddings (embeddings.ts)**
-- [ ] Transformers.js integration
-- [ ] LanceDB setup
-- [ ] Embedding generation pipeline
-- [ ] Semantic search integration
-- [ ] Update pre-filter to use embeddings
+- [ ] sqlite-vec extension loading and table creation
+- [ ] Transformers.js integration for local embedding generation
+- [ ] Embedding pipeline for file metadata + vision descriptions
+- [ ] Hybrid search (FTS5 keyword + vector cosine similarity)
+- [ ] Integration with pre-filter in AI Interface
 
-**Claude Vision Integration**
-- [ ] Image analysis for photos without EXIF
-- [ ] Cost management (only when needed)
+**Note:** LanceDB has been replaced by sqlite-vec to keep all data in a single SQLite database, reducing bundle size and architectural complexity.
 
 ---
 
@@ -465,13 +607,16 @@ Full E2E flow:
 |-----------|-------------|--------|
 | M1 | Scanner + Extractor working | Day 3 |
 | M2 | SQLite index with search | Day 5 |
+| M2.5 | Vision enrichment working | Day 4 |
 | M3 | CLI can scan and search | Day 6 |
+| M3.5 | Semantic search with sqlite-vec | Day 6 |
 | M4 | Watcher detects changes | Day 7 |
-| M5 | AI generates action plans | Day 9 |
+| M5 | AI generates plans with confirmation stage | Day 9 |
 | M6 | Executor moves files safely | Day 12 |
 | M7 | Undo works correctly | Day 12 |
 | M8 | Integration tests pass | Day 14 |
 | M9 | Ready for Electron integration | Day 14 |
+| M10 | Smart Folder guided flow working | Day 14 |
 
 ---
 
@@ -541,8 +686,9 @@ describe('End to End', () => {
 
 | Risk | Mitigation |
 |------|------------|
-| pdf-parse fails on some PDFs | Graceful fallback, log warning |
-| exifreader fails on some images | Graceful fallback, log warning |
+| unpdf fails on some PDFs | Graceful fallback, log warning |
+| exifr fails on some images | Graceful fallback, log warning |
+| music-metadata fails on audio | Graceful fallback, return null |
 | Claude returns invalid JSON | Zod validation, retry once |
 | File locked during move | Retry with backoff, fail gracefully |
 | Database corruption | WAL mode, regular backups |
@@ -567,9 +713,10 @@ A feature is done when:
 
 ## Next Steps After Backend
 
-1. **Electron Integration** - Wire engine to Electron main process
-2. **React UI** - Chat interface, confirmation dialogs
-3. **Settings UI** - Folder management, preferences
-4. **Auto-update** - electron-updater integration
-5. **Code signing** - macOS notarization, Windows EV cert
-6. **Beta testing** - Recruit 5-10 non-technical users
+1. **Electron Integration** — Wire engine to Electron main process
+2. **React UI** — Chat interface, plan confirmation dialogs, file preview
+3. **Settings UI** — Folder management, VLM preferences, API key management
+4. **Vision Dashboard** — Show enrichment status, descriptions, categories
+5. **Auto-update** — electron-updater integration
+6. **Code signing** — macOS notarization, Windows EV cert
+7. **Beta testing** — Recruit 5-10 non-technical users

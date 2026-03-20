@@ -53,3 +53,19 @@ export class ValidationError extends FileMomError {
     });
   }
 }
+
+export class WatcherError extends FileMomError {
+  constructor(message: string, cause?: Error) {
+    super(message, 'WATCHER_ERROR', true, {
+      cause: cause?.message,
+    });
+  }
+}
+
+export class EmbeddingError extends FileMomError {
+  constructor(message: string, cause?: Error) {
+    super(message, 'EMBEDDING_ERROR', true, {
+      cause: cause?.message,
+    });
+  }
+}

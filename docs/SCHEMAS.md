@@ -29,10 +29,24 @@ export interface ScannedFile {
 export interface ExtractedMetadata {
   path: string;
   quickHash: string;              // xxHash of first 4KB + size
-  extractedText: string | null;   // Text content (max 10KB)
+  extractedText: string | null;   // Text content (max 10KB). For audio: "Artist: X | Album: Y | ..."
   exif: ExifData | null;          // EXIF data for images
+  detectedMimeType: string | null; // Actual MIME type detected via magic bytes (file-type)
   extractionError: string | null; // Error message if extraction failed
   extractedAt: number;            // Unix ms timestamp
+}
+
+/**
+ * Output from VisionEnricher — visual understanding of file contents
+ */
+export interface VisionResult {
+  path: string;
+  description: string;        // "Beach sunset photo with two people, tropical setting"
+  category: string;           // "photo", "screenshot", "document", "diagram", "receipt"
+  tags: string[];             // ["beach", "sunset", "people", "tropical"]
+  confidence: number;         // 0.0 to 1.0
+  model: string;              // Which Claude model was used
+  enrichedAt: number;         // Unix ms timestamp
 }
 
 /**
@@ -69,7 +83,11 @@ export interface FileRecord {
   extractedText: string | null;
   exifJson: string | null;        // JSON stringified ExifData
   indexedAt: number;
-  embeddingId: string | null;     // Phase 2: reference to LanceDB
+  embeddingId: string | null;     // Reserved for future use (embeddings use file_embeddings table)
+  visionDescription: string | null;   // AI-generated visual description
+  visionCategory: string | null;      // "photo", "screenshot", "document", etc.
+  visionTags: string | null;          // JSON stringified string[]
+  enrichedAt: number | null;          // When VLM processing completed
 }
 
 /**
@@ -83,6 +101,7 @@ export interface FileIndexEntry {
   size: number;
   modifiedDate: string;           // Human readable: "2024-03-15"
   summary: string | null;         // "Photo taken 2017-08-15 in Hawaii" or first 200 chars of text
+  visionDescription: string | null;   // "Beach sunset with two people"
 }
 ```
 
@@ -93,7 +112,7 @@ export interface FileIndexEntry {
  * Single action in an action plan
  */
 export interface Action {
-  id: string;                     // UUID for tracking
+  id: string;                     // String identifier for tracking
   type: ActionType;
   source: string;                 // Absolute path (existing file/folder)
   destination: string;            // Absolute path (target location)
@@ -144,6 +163,28 @@ export interface ExecutionResult {
     failed: number;
     skipped: number;
   };
+}
+
+/**
+ * Options for refining an existing action plan via conversational feedback
+ */
+export interface RefinePlanOptions {
+  plan: ActionPlan;              // The current plan to refine
+  feedback: string;              // Natural language feedback from user
+  fileIndex: FileIndexEntry[];   // Original file context
+  history: string[];             // Previous feedback strings in this session
+}
+
+/**
+ * Tracks the state of a plan refinement session
+ */
+export interface RefinementSession {
+  sessionId: string;             // UUID
+  originalCommand: string;       // The initial user command
+  currentPlan: ActionPlan;       // Latest version of the plan
+  feedbackHistory: string[];     // All feedback given so far
+  round: number;                 // Current refinement round (0-based)
+  maxRounds: number;             // Maximum allowed rounds (default: 3)
 }
 ```
 
@@ -208,8 +249,8 @@ export interface FileMomConfig {
   skipExtensions: string[];       // Extensions to skip extraction
 
   // AI
-  anthropicApiKey: string;
-  model: ClaudeModel;
+  openRouterApiKey: string;
+  model: string;                    // OpenRouter format: 'provider/model-name'
   maxFilesPerRequest: number;
   requestTimeoutMs: number;
 
@@ -219,16 +260,24 @@ export interface FileMomConfig {
   retryAttempts: number;
   retryDelayMs: number;
 
+  // Vision enrichment
+  enableVisionEnrichment: boolean;
+  visionModel: string;
+  visionMaxImageDimension: number;
+  visionBatchSize: number;
+  visionMinTextThreshold: number;
+
+  // Plan refinement
+  maxRefinementRounds: number;
+
   // Phase 2
   enableEmbeddings: boolean;
   embeddingModel: string;
-  lanceDbPath: string;
+  embeddingDimensions: number;
 }
 
-export type ClaudeModel =
-  | 'claude-sonnet-4-20250514'
-  | 'claude-haiku-4-20250514'
-  | 'claude-opus-4-20250514';
+// AIModel is now a flexible string in OpenRouter format: 'provider/model-name'
+// Examples: 'anthropic/claude-sonnet-4', 'anthropic/claude-haiku-4.5', 'google/gemini-2.5-flash'
 
 /**
  * Default configuration values
@@ -247,7 +296,7 @@ export const DEFAULT_CONFIG: Partial<FileMomConfig> = {
   maxTextLength: 10000,
   extractionTimeoutMs: 5000,
   skipExtensions: ['exe', 'dll', 'so', 'dylib', 'bin'],
-  model: 'claude-sonnet-4-20250514',
+  model: 'anthropic/claude-sonnet-4',
   maxFilesPerRequest: 500,
   requestTimeoutMs: 30000,
   undoTTLMinutes: 30,
@@ -256,7 +305,39 @@ export const DEFAULT_CONFIG: Partial<FileMomConfig> = {
   retryDelayMs: 1000,
   enableEmbeddings: false,
   embeddingModel: 'all-MiniLM-L6-v2',
+  enableVisionEnrichment: true,
+  visionModel: 'anthropic/claude-haiku-4.5',
+  visionMaxImageDimension: 1024,
+  visionBatchSize: 50,
+  visionMinTextThreshold: 50,
+  maxRefinementRounds: 3,
+  embeddingDimensions: 384,
 };
+```
+
+### Smart Folder Types
+
+```typescript
+/**
+ * A sample of files returned during the Smart Folder guided flow
+ */
+export interface SmartFolderSample {
+  files: SearchResult[];           // 3-5 representative files
+  totalMatches: number;            // Total files matching current criteria
+  suggestedFolderName: string;     // AI-suggested folder name
+}
+
+/**
+ * Tracks the state of a Smart Folder session
+ */
+export interface SmartFolderState {
+  sessionId: string;               // UUID
+  history: string[];               // User inputs so far ("tax documents", "not receipts")
+  currentQuery: string;            // Derived search query
+  excludePatterns: string[];       // Terms/patterns to exclude
+  matchedFileIds: number[];        // File IDs matching current criteria
+  status: 'refining' | 'confirmed' | 'cancelled';
+}
 ```
 
 ### Event Types
@@ -303,7 +384,7 @@ export type ExecutorEvent =
 import { z } from 'zod';
 
 export const ActionSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().min(1),          // String identifier (models don't reliably generate UUIDs)
   type: z.enum(['move_file', 'rename_file', 'create_folder', 'copy_file']),
   source: z.string().min(1),
   destination: z.string().min(1),
@@ -314,7 +395,7 @@ export const ActionSchema = z.object({
 export const ActionPlanSchema = z.object({
   intent: z.string().min(1).max(200),
   actions: z.array(ActionSchema).min(0).max(1000),
-  needsReview: z.array(z.string().uuid()),
+  needsReview: z.array(z.string()),
   summary: z.object({
     filesAffected: z.number().int().min(0),
     foldersCreated: z.number().int().min(0),
@@ -338,12 +419,8 @@ export const ConfigSchema = z.object({
   maxTextLength: z.number().int().min(100).max(100000).default(10000),
   extractionTimeoutMs: z.number().int().min(1000).max(60000).default(5000),
   skipExtensions: z.array(z.string()).default([]),
-  anthropicApiKey: z.string().min(1),
-  model: z.enum([
-    'claude-sonnet-4-20250514',
-    'claude-haiku-4-20250514',
-    'claude-opus-4-20250514'
-  ]).default('claude-sonnet-4-20250514'),
+  openRouterApiKey: z.string().min(1),
+  model: z.string().min(1).default('anthropic/claude-sonnet-4'),  // OpenRouter format: 'provider/model-name'
   maxFilesPerRequest: z.number().int().min(10).max(1000).default(500),
   requestTimeoutMs: z.number().int().min(5000).max(120000).default(30000),
   undoTTLMinutes: z.number().int().min(5).max(1440).default(30),
@@ -352,7 +429,13 @@ export const ConfigSchema = z.object({
   retryDelayMs: z.number().int().min(100).max(10000).default(1000),
   enableEmbeddings: z.boolean().default(false),
   embeddingModel: z.string().default('all-MiniLM-L6-v2'),
-  lanceDbPath: z.string().optional(),
+  enableVisionEnrichment: z.boolean().default(true),
+  visionModel: z.string().min(1).default('anthropic/claude-haiku-4.5'),  // OpenRouter format
+  visionMaxImageDimension: z.number().int().min(200).max(2048).default(1024),
+  visionBatchSize: z.number().int().min(1).max(200).default(50),
+  visionMinTextThreshold: z.number().int().min(0).max(1000).default(50),
+  maxRefinementRounds: z.number().int().min(1).max(10).default(3),
+  embeddingDimensions: z.number().int().min(64).max(2048).default(384),
 });
 ```
 
@@ -376,6 +459,10 @@ CREATE TABLE IF NOT EXISTS files (
   exif_json       TEXT,
   indexed_at      INTEGER NOT NULL,
   embedding_id    TEXT,
+  vision_description TEXT,
+  vision_category    TEXT,
+  vision_tags        TEXT,          -- JSON array of strings
+  enriched_at        INTEGER,
 
   -- Indexes for common queries
   CONSTRAINT valid_size CHECK (size >= 0),
@@ -397,6 +484,9 @@ CREATE INDEX idx_files_name ON files(name COLLATE NOCASE);
 
 -- Index for finding files needing re-extraction
 CREATE INDEX idx_files_indexed_at ON files(indexed_at);
+
+-- Index for finding files needing vision enrichment
+CREATE INDEX idx_files_enriched_at ON files(enriched_at);
 ```
 
 ### Full-Text Search Table
@@ -407,6 +497,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
   name,
   extracted_text,
   path,
+  vision_description,
   content='files',
   content_rowid='id',
   tokenize='porter unicode61'
@@ -414,20 +505,20 @@ CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
 
 -- Triggers to keep FTS in sync with files table
 CREATE TRIGGER files_ai AFTER INSERT ON files BEGIN
-  INSERT INTO files_fts(rowid, name, extracted_text, path)
-  VALUES (new.id, new.name, new.extracted_text, new.path);
+  INSERT INTO files_fts(rowid, name, extracted_text, path, vision_description)
+  VALUES (new.id, new.name, new.extracted_text, new.path, new.vision_description);
 END;
 
 CREATE TRIGGER files_ad AFTER DELETE ON files BEGIN
-  INSERT INTO files_fts(files_fts, rowid, name, extracted_text, path)
-  VALUES ('delete', old.id, old.name, old.extracted_text, old.path);
+  INSERT INTO files_fts(files_fts, rowid, name, extracted_text, path, vision_description)
+  VALUES ('delete', old.id, old.name, old.extracted_text, old.path, old.vision_description);
 END;
 
 CREATE TRIGGER files_au AFTER UPDATE ON files BEGIN
-  INSERT INTO files_fts(files_fts, rowid, name, extracted_text, path)
-  VALUES ('delete', old.id, old.name, old.extracted_text, old.path);
-  INSERT INTO files_fts(rowid, name, extracted_text, path)
-  VALUES (new.id, new.name, new.extracted_text, new.path);
+  INSERT INTO files_fts(files_fts, rowid, name, extracted_text, path, vision_description)
+  VALUES ('delete', old.id, old.name, old.extracted_text, old.path, old.vision_description);
+  INSERT INTO files_fts(rowid, name, extracted_text, path, vision_description)
+  VALUES (new.id, new.name, new.extracted_text, new.path, new.vision_description);
 END;
 ```
 
@@ -581,7 +672,7 @@ export const ACTION_PLAN_JSON_SCHEMA = {
         properties: {
           id: {
             type: 'string',
-            description: 'Unique identifier (UUID format)',
+            description: 'Unique string identifier for tracking',
           },
           type: {
             type: 'string',
@@ -636,31 +727,106 @@ export const ACTION_PLAN_JSON_SCHEMA = {
 };
 ```
 
----
-
-## LanceDB Schema (Phase 2)
-
-### Embeddings Collection
+### Vision Enrichment Prompt
 
 ```typescript
+export const VISION_SYSTEM_PROMPT = `You are a file analysis assistant. Describe the visual contents of this file for use in a file organization system.
+
+RULES:
+1. Provide a concise 1-2 sentence description of what the file contains
+2. Classify into exactly one category: photo, screenshot, document, diagram, receipt, meme, artwork, or other
+3. Extract 3-8 descriptive tags
+4. Assign a confidence level for your classification
+
+OUTPUT FORMAT:
+Respond with valid JSON matching the provided schema.`;
+
+export const VISION_JSON_SCHEMA = {
+  type: 'object',
+  properties: {
+    description: {
+      type: 'string',
+      description: 'Concise 1-2 sentence description of the file contents',
+    },
+    category: {
+      type: 'string',
+      enum: ['photo', 'screenshot', 'document', 'diagram', 'receipt', 'meme', 'artwork', 'other'],
+    },
+    tags: {
+      type: 'array',
+      items: { type: 'string' },
+      minItems: 3,
+      maxItems: 8,
+    },
+    confidence: {
+      type: 'number',
+      minimum: 0,
+      maximum: 1,
+    },
+  },
+  required: ['description', 'category', 'tags', 'confidence'],
+  additionalProperties: false,
+};
+```
+
+### Refinement Prompt
+
+```typescript
+export const REFINEMENT_SYSTEM_PROMPT = `You are FileMom, an AI assistant that helps users organize their files. You are refining an existing action plan based on user feedback.
+
+RULES:
+1. Keep all actions the user did not mention — only modify what they asked to change
+2. If the user says to exclude certain files, remove those actions entirely
+3. If the user wants to change destinations, update the relevant actions
+4. Preserve the same JSON schema as the original plan
+5. Update the summary counts to reflect the changes
+6. Update needsReview if confidence changes`;
+
+export function buildRefinementPrompt(
+  plan: ActionPlan,
+  feedback: string,
+  history: string[]
+): string {
+  return `CURRENT PLAN:
+${JSON.stringify(plan, null, 2)}
+
+USER FEEDBACK:
+"${feedback}"
+
+${history.length > 0 ? `PREVIOUS FEEDBACK IN THIS SESSION:\n${history.map((h, i) => `${i + 1}. "${h}"`).join('\n')}\n` : ''}
+Regenerate the action plan incorporating the user's feedback. Return a complete ActionPlan JSON.`;
+}
+```
+
+---
+
+## sqlite-vec Schema (Phase 2)
+
+### Vector Embeddings Table
+
+```sql
+-- sqlite-vec virtual table for vector similarity search
+-- Stored in the same SQLite database as files and transactions
+CREATE VIRTUAL TABLE IF NOT EXISTS file_embeddings USING vec0(
+  file_id INTEGER PRIMARY KEY,
+  embedding FLOAT[384]
+);
+```
+
+```typescript
+// Embedding generation using Transformers.js
 interface EmbeddingRecord {
-  id: string;           // Same as file path for uniqueness
-  fileId: number;       // Foreign key to SQLite files.id
-  vector: number[];     // 384 dimensions for MiniLM
-  text: string;         // Original text that was embedded
-  createdAt: number;    // Unix timestamp
+  fileId: number;         // Foreign key to files.id
+  embedding: number[];    // 384 dimensions (all-MiniLM-L6-v2)
 }
 
-// LanceDB table creation
-const embeddingsTable = await db.createTable('embeddings', [
-  {
-    id: '/path/to/file.pdf',
-    fileId: 123,
-    vector: new Array(384).fill(0),  // Placeholder
-    text: 'sample document text',
-    createdAt: Date.now(),
-  },
-]);
+// Hybrid search combines FTS5 keyword score with vector cosine similarity
+interface HybridSearchResult {
+  fileId: number;
+  ftsScore: number;       // FTS5 relevance score
+  vectorScore: number;    // Cosine similarity (0-1)
+  combinedScore: number;  // Weighted combination
+}
 ```
 
 ---

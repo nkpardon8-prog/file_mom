@@ -6,6 +6,8 @@ import {
   AIError,
   ExecutionError,
   ValidationError,
+  WatcherError,
+  EmbeddingError,
 } from '../src/errors.js';
 
 describe('FileMomError', () => {
@@ -83,5 +85,63 @@ describe('ValidationError', () => {
     expect(err.code).toBe('VALIDATION_ERROR');
     expect(err.recoverable).toBe(false);
     expect(err.details?.issues).toEqual(['missing source', 'bad confidence']);
+  });
+});
+
+describe('WatcherError', () => {
+  it('stores message and optional cause, recoverable=true', () => {
+    const err = new WatcherError('folder removed', new Error('ENOENT'));
+    expect(err.message).toBe('folder removed');
+    expect(err.code).toBe('WATCHER_ERROR');
+    expect(err.recoverable).toBe(true);
+    expect(err.details?.cause).toBe('ENOENT');
+    expect(err).toBeInstanceOf(FileMomError);
+  });
+
+  it('handles missing cause gracefully', () => {
+    const err = new WatcherError('watcher already running');
+    expect(err.details?.cause).toBeUndefined();
+  });
+});
+
+describe('Error hierarchy', () => {
+  it('all subclasses are instanceof FileMomError and Error', () => {
+    const errors = [
+      new ScanError('/p', new Error('e')),
+      new ExtractionError('/p', new Error('e')),
+      new AIError('msg'),
+      new ExecutionError('id', 'msg'),
+      new ValidationError('msg', []),
+      new WatcherError('msg'),
+      new EmbeddingError('msg'),
+    ];
+    for (const err of errors) {
+      expect(err).toBeInstanceOf(FileMomError);
+      expect(err).toBeInstanceOf(Error);
+    }
+  });
+
+  it('all subclasses have name FileMomError', () => {
+    const errors = [
+      new ScanError('/p', new Error('e')),
+      new ExtractionError('/p', new Error('e')),
+      new AIError('msg'),
+      new ExecutionError('id', 'msg'),
+      new ValidationError('msg', []),
+      new WatcherError('msg'),
+      new EmbeddingError('msg'),
+    ];
+    for (const err of errors) {
+      expect(err.name).toBe('FileMomError');
+    }
+  });
+
+  it('cause chain propagation in details', () => {
+    const root = new Error('root cause');
+    const scan = new ScanError('/test/path', root);
+    expect(scan.details?.cause).toBe('root cause');
+
+    const extract = new ExtractionError('/test/file.pdf', root);
+    expect(extract.details?.cause).toBe('root cause');
   });
 });

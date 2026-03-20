@@ -14,7 +14,7 @@
     "cli": "pnpm --filter @filemom/cli start"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["better-sqlite3", "exifreader"]
+    "onlyBuiltDependencies": ["better-sqlite3", "exifreader", "sharp"]
   },
   "devDependencies": {
     "@eslint/js": "^10.0.0",

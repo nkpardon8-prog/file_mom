@@ -20,6 +20,7 @@ export interface ExtractedMetadata {
   quickHash: string;
   extractedText: string | null;
   exif: ExifData | null;
+  detectedMimeType: string | null;
   extractionError: string | null;
   extractedAt: number;
 }
@@ -41,6 +42,25 @@ export interface ExifData {
   orientation: number | null;
 }
 
+/** Output from VisionEnricher — visual understanding of file */
+export interface VisionResult {
+  description: string;
+  category: string;
+  tags: string[];
+  confidence: number;
+  model: string;
+  enrichedAt: number;
+}
+
+/** Result of a batch enrichment operation */
+export interface EnrichmentResult {
+  enriched: number;
+  skipped: number;
+  errors: Array<{ path: string; error: string }>;
+  cost: number;
+  durationMs: number;
+}
+
 /** Combined file record stored in database */
 export interface FileRecord {
   id: number;
@@ -53,8 +73,13 @@ export interface FileRecord {
   quickHash: string;
   extractedText: string | null;
   exifJson: string | null;
+  detectedMimeType: string | null;
   indexedAt: number;
   embeddingId: string | null;
+  visionDescription: string | null;
+  visionCategory: string | null;
+  visionTags: string | null;
+  enrichedAt: number | null;
 }
 
 /** Simplified file info sent to Claude API */
@@ -66,6 +91,7 @@ export interface FileIndexEntry {
   size: number;
   modifiedDate: string;
   summary: string | null;
+  visionDescription: string | null;
 }
 
 // ============================================================
@@ -152,10 +178,8 @@ export interface BatchSummary {
 // Configuration Types
 // ============================================================
 
-export type ClaudeModel =
-  | 'claude-sonnet-4-20250514'
-  | 'claude-haiku-4-20250514'
-  | 'claude-opus-4-20250514';
+/** Model identifier — any OpenRouter model ID (e.g. 'anthropic/claude-sonnet-4') */
+export type AIModel = string;
 
 /** Full engine configuration */
 export interface FileMomConfig {
@@ -167,17 +191,30 @@ export interface FileMomConfig {
   maxTextLength: number;
   extractionTimeoutMs: number;
   skipExtensions: string[];
-  anthropicApiKey: string;
-  model: ClaudeModel;
+  openRouterApiKey: string;
+  model: AIModel;
   maxFilesPerRequest: number;
   requestTimeoutMs: number;
   undoTTLMinutes: number;
   maxConcurrentOps: number;
   retryAttempts: number;
   retryDelayMs: number;
+  maxRefinementRounds: number;
+  enableVisionEnrichment: boolean;
+  visionModel: string;
+  visionMaxImageDimension: number;
+  visionBatchSize: number;
+  visionMinTextThreshold: number;
   enableEmbeddings: boolean;
   embeddingModel: string;
-  lanceDbPath?: string;
+  embeddingDimensions: number;
+}
+
+/** Options for refining an existing action plan */
+export interface RefinePlanOptions {
+  plan: ActionPlan;
+  feedback: string;
+  history: string[];
 }
 
 // ============================================================
@@ -243,6 +280,35 @@ export interface SearchResult {
   mtime: number;
   score: number;
   snippet: string | null;
+}
+
+export interface SemanticSearchOptions {
+  limit?: number;
+  extensions?: string[];
+  folders?: string[];
+  ftsWeight?: number;
+  vectorWeight?: number;
+  minScore?: number;
+}
+
+export interface HybridSearchResult {
+  id: number;
+  path: string;
+  name: string;
+  extension: string;
+  size: number;
+  mtime: number;
+  ftsScore: number;
+  vectorScore: number;
+  combinedScore: number;
+  snippet: string | null;
+}
+
+export interface EmbeddingResult {
+  embedded: number;
+  skipped: number;
+  errors: Array<{ path: string; error: string }>;
+  durationMs: number;
 }
 
 export interface PlanOptions {

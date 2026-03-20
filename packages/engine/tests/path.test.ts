@@ -17,6 +17,19 @@ describe('normalizePath', () => {
   it('passes through already-absolute paths', () => {
     expect(normalizePath('/usr/local/bin')).toBe('/usr/local/bin');
   });
+
+  it('resolves empty string to cwd', () => {
+    expect(normalizePath('')).toBe(resolve(''));
+  });
+
+  it('strips trailing slash', () => {
+    expect(normalizePath('/foo/bar/')).toBe('/foo/bar');
+  });
+
+  it('resolves ./ prefix to absolute', () => {
+    expect(normalizePath('./foo')).toBe(resolve('./foo'));
+    expect(normalizePath('./foo').startsWith('/')).toBe(true);
+  });
 });
 
 describe('isWithinFolder', () => {
@@ -43,5 +56,13 @@ describe('isWithinFolder', () => {
 
   it('returns false for parent path', () => {
     expect(isWithinFolder('/home/user', '/home/user/docs')).toBe(false);
+  });
+
+  it('returns false for .. that escapes folder', () => {
+    expect(isWithinFolder('/a/b/../../../etc/passwd', '/a')).toBe(false);
+  });
+
+  it('handles trailing slash on folder path', () => {
+    expect(isWithinFolder('/a/b/c.txt', '/a/b/')).toBe(true);
   });
 });

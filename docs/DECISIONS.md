@@ -39,9 +39,12 @@ This document records key technical decisions made during planning, with rationa
 **Options Considered:**
 | File Type | Option A | Option B |
 |-----------|----------|----------|
-| Images | ExifTool (binary) | exifreader (pure JS) |
-| PDF | Poppler (binary) | pdf-parse (pure JS) |
+| File Type | Option A | Option B (chosen) |
+|-----------|----------|----------|
+| Images | ExifTool (binary) | exifr (pure JS, 4x faster than exifreader) |
+| PDF | Poppler (binary) | unpdf (pure JS, maintained, uses PDF.js v5.4) |
 | DOCX | Pandoc (binary) | mammoth (pure JS) |
+| Audio | FFmpeg (binary) | music-metadata (pure JS, 23+ formats) |
 
 **Choice:** Option B for all — pure JS
 
@@ -50,6 +53,12 @@ This document records key technical decisions made during planning, with rationa
 - Works on all platforms without PATH configuration
 - Smaller bundle size (~2MB vs ~190MB with binaries)
 - Sufficient for our needs (we need metadata, not advanced processing)
+
+**Updates (2026-03-18):**
+- Replaced `exifreader` with `exifr` — 4x faster (2.5ms vs 9.5ms per image), zero deps, flat API
+- Replaced `pdf-parse` with `unpdf` — actively maintained by UnJS team, no constructor/destroy lifecycle
+- Added `music-metadata` — audio metadata extraction (artist, album, genre, duration)
+- Added `file-type` — MIME-type detection via magic bytes for correct extractor routing
 
 **Trade-offs:**
 - May not handle every edge case that native tools handle
@@ -86,27 +95,28 @@ quickHash = xxhash64(first4KB) + '-' + fileSize
 
 ## Decision 4: Database Architecture
 
-**Date:** 2026-03-17
+**Date:** 2026-03-17 (Updated: 2026-03-18)
 
-**Decision:** SQLite for metadata, LanceDB for embeddings (Phase 2)
+**Decision:** SQLite for everything — metadata, FTS5 search, and vector embeddings via sqlite-vec
 
 **Options Considered:**
 1. SQLite only (with sqlite-vec for vectors)
 2. SQLite + LanceDB
 3. SQLite + Orama (in-memory)
 
-**Choice:** Option 2
+**Choice:** Option 1 — SQLite with sqlite-vec
 
 **Rationale:**
 - SQLite is battle-tested, great tooling, perfect for metadata
-- LanceDB is purpose-built for vectors, disk-based performance
-- Clear separation of concerns
-- Both are embedded (no server process)
-- sqlite-vec is newer, less mature
+- sqlite-vec adds vector search to the same database (~200KB extension)
+- Single database file — no second storage engine to manage
+- Sufficient performance for brute-force KNN on <100K vectors
+- Smaller bundle size than LanceDB (200KB vs 20-40MB)
+- Simpler architecture: all data in one place, one backup, one migration path
 
-**Schema Split:**
+**Schema:**
 - `files` table in SQLite (all metadata, FTS5 search)
-- `embeddings` collection in LanceDB (vectors only, Phase 2)
+- `file_embeddings` virtual table via sqlite-vec (384-dim vectors, same DB)
 
 ---
 
@@ -365,6 +375,198 @@ await Promise.all(
 | zod | ^3.22.0 | ^3.24.0 | Kept on v3 intentionally |
 | vitest | ^1.4.0 | ^4.1.0 | API compatible |
 | p-limit | ^5.0.0 | ^6.2.0 | Only used in Phase 6 |
+
+---
+
+## Decision 15: Smart Folder Guided Workflow
+
+**Date:** 2026-03-18
+
+**Decision:** Add a "Create Folder with AI" button-driven flow alongside the existing freeform command interface
+
+**Rationale:**
+- A button is more discoverable than a blank text box for non-technical users
+- The preview-and-confirm loop catches mistakes *before* moving files, reducing reliance on undo
+- Each Claude API call is small (3-5 sample files vs 500), making it faster and cheaper
+- The conversation is bounded (2-3 rounds), not open-ended — easy to build and test
+- Sits alongside the existing `plan()`/`execute()` flow without replacing it
+
+**Architecture:**
+- Builds on existing components: `Indexer.search()` for sampling, `AIInterface` for folder naming, `Executor` for moves
+- New `SmartFolderSession` class orchestrates the multi-turn flow
+- New `Indexer.sampleFiles()` method returns diverse representative files
+- Refinement logic parses user feedback ("not receipts") into search exclusions
+- Implementation spread across Phases 2, 5, and 7 to align with component readiness
+
+**Trade-offs:**
+- Adds a parallel workflow path (more code surface to maintain)
+- Multi-turn state management is slightly more complex than single-shot plan
+- Worth it because it's fundamentally more user-friendly for the target audience
+
+---
+
+## Decision 16: Keep fast-glob (Not Replacing with tinyglobby)
+
+**Date:** 2026-03-18
+
+**Decision:** Keep `fast-glob` as the glob library
+
+**Options Considered:**
+1. Keep fast-glob
+2. Switch to tinyglobby (smaller, faster for non-streaming use)
+
+**Choice:** Option 1
+
+**Rationale:**
+- Scanner relies on `fg.globStream()` with `{ stats: true }` to get file metadata in a single pass
+- Scanner uses `fg.convertPathToPattern()` for safe path escaping
+- tinyglobby does not support streaming mode or stats collection
+- Replacing fast-glob would require separate `fs.lstat()` calls per file, degrading scan performance
+
+**Consequences:**
+- Slightly larger bundle than tinyglobby (~40KB difference)
+- No changes needed to scanner.ts
+
+---
+
+## Decision 17: MIME-Type Detection with file-type
+
+**Date:** 2026-03-18
+
+**Decision:** Add `file-type` library for content-based MIME detection in the extractor
+
+**Rationale:**
+- Extractor previously dispatched purely by file extension — misnamed files routed to wrong extractor
+- `file-type` reads magic bytes (first few bytes) to detect actual content type
+- MIME detection takes priority; extension is the fallback when file-type returns null
+- Adds `detectedMimeType` field to `ExtractedMetadata` for downstream consumers
+
+**Consequences:**
+- Files with wrong extensions are now correctly processed (e.g., a PDF renamed to .jpg)
+- Tiny overhead per file (reads first few bytes, very fast)
+- New `detectedMimeType` field in ExtractedMetadata type
+
+---
+
+## Decision 18: Audio Metadata as Formatted Text
+
+**Date:** 2026-03-18
+
+**Decision:** Store audio metadata as a formatted text string in `extractedText` rather than a separate structured field
+
+**Format:** `"Artist: X | Album: Y | Title: Z | Year: N | Genre: G | Duration: M:SS"`
+
+**Rationale:**
+- Puts audio metadata into FTS5 full-text search index automatically (no schema changes)
+- Users can search for "Radiohead" or "Alternative Rock" and find matching audio files
+- Avoids adding `audioMetadata` field to ExtractedMetadata which would cascade to DB schema, indexer, etc.
+- Structured audio data can be added later as a separate enrichment field if needed
+
+**Consequences:**
+- Audio files are now searchable by artist, album, title, genre, year
+- No database schema migration required
+- Trade-off: audio metadata is not individually queryable (e.g., can't filter by year range)
+
+---
+
+## Decision 19: OpenRouter as AI Provider
+
+**Date:** 2026-03-18
+
+**Decision:** Use OpenRouter via OpenAI SDK instead of Anthropic SDK directly
+
+**Options Considered:**
+1. Anthropic SDK direct (single provider)
+2. OpenRouter via OpenAI SDK (multi-provider, single key)
+3. OpenRouter via plain fetch (no SDK)
+
+**Choice:** Option 2
+
+**Rationale:**
+- Single API key for all models (Claude, Gemini, GPT-4o)
+- OpenAI SDK handles retries, timeouts, streaming natively
+- Model switching requires changing a config string, not an SDK
+- Tool calling tested and confirmed working
+- `usage.cost` in responses enables budget tracking
+- Confirmed model IDs: `anthropic/claude-sonnet-4` ($3/$15/M), `anthropic/claude-haiku-4.5` ($1/$5/M), `google/gemini-2.5-flash` ($0.30/$2.50/M)
+
+**Consequences:**
+- Replaced @anthropic-ai/sdk with openai SDK
+- Config changed from `anthropicApiKey` to `openRouterApiKey`
+- Model strings use OpenRouter format: `provider/model-name`
+- `strict: true` not used (not confirmed by OpenRouter docs) — Zod validation is the safety net
+- Action IDs relaxed from UUID to any string (models don't reliably generate UUIDs)
+
+---
+
+## Decision 20: Qwen VL for Vision Enrichment
+
+**Date:** 2026-03-19
+
+**Decision:** Use `qwen/qwen-2.5-vl-7b-instruct` via OpenRouter for vision enrichment instead of Claude Vision
+
+**Rationale:**
+- ~100x cheaper than Claude Haiku ($0.20/M vs $1/$5 per M tokens)
+- Good enough quality for file description/categorization/tagging
+- Available through the same OpenRouter API — no additional SDK needed
+- Tested: returns accurate descriptions, categories, and tags
+
+**Consequences:**
+- Uses JSON response mode instead of tool calling (Qwen VL doesn't support tools on OpenRouter)
+- Category is a flexible string (not enum) since models return free-form categories like "logo"
+- Cost per image: ~$0.0003
+
+---
+
+## Decision 21: AI-Powered Query Expansion in Pre-Filter
+
+**Date:** 2026-03-19
+
+**Decision:** Add a cheap AI call before the FTS5 search step that expands the user's command into multiple keywords, folder patterns, and extension filters
+
+**Rationale:**
+- Raw FTS5 keyword search only finds literal string matches
+- Users think in terms of projects ("plan2bid files") not exact filenames
+- A single cheap AI call (~$0.001) dramatically improves file discovery
+- The expansion model sees the actual folder structure and can infer related terms
+
+**Architecture:**
+1. `expandQuery()` sends user command + top folders + index stats to AI
+2. AI returns: keywords, folderPatterns, extensions, reasoning
+3. Multi-query search: each keyword searched via FTS5 + folder patterns matched via LIKE
+4. Results merged, deduplicated, capped at maxFilesPerRequest
+5. Expanded context passed to plan generation as before
+
+**Consequences:**
+- One additional API call per plan (~$0.001 with Haiku)
+- Better file discovery for project-level and contextual commands
+- Expansion results shown to user in CLI for transparency
+
+---
+
+## Decision 22: Executor — Copy-Then-Delete with Transaction Log
+
+**Date:** 2026-03-19
+
+**Decision:** All file moves use copy-then-delete (never fs.rename), with every operation recorded to a SQLite transaction log before execution
+
+**Rationale:**
+- `fs.rename()` fails across volumes (SSD → external drive) — copy-then-delete works everywhere
+- Recording BEFORE execution means partial failures are recoverable
+- LIFO rollback enables undo within a configurable TTL window (30 min default)
+- Copy verification (size check) catches corruption before deleting the source
+- Name collision handling with `(1)`, `(2)` suffixes prevents overwrites
+
+**Architecture:**
+- `Executor`: topological sort (folders first by depth), parallel file ops with p-limit
+- `TransactionLog`: SQLite tables (`batches` + `transactions`), shares the index.db file
+- `safeCopy()`: copyFile + size verification + parent directory creation
+- `resolveCollision()`: checks if destination exists, tries suffixed names up to (999)
+
+**Consequences:**
+- Moves are slower than rename (copy + delete vs atomic rename) but safer
+- Undo window limited to TTL (expired batches can't be undone)
+- Transaction log grows over time — `cleanupExpired()` purges old records
 
 ---
 

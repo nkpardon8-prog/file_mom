@@ -40,8 +40,8 @@ describe('ActionSchema', () => {
     expect(() => ActionSchema.parse({ ...VALID_ACTION, confidence: -0.1 })).toThrow();
   });
 
-  it('rejects non-UUID id', () => {
-    expect(() => ActionSchema.parse({ ...VALID_ACTION, id: 'not-a-uuid' })).toThrow();
+  it('rejects empty id', () => {
+    expect(() => ActionSchema.parse({ ...VALID_ACTION, id: '' })).toThrow();
   });
 
   it('rejects empty source path', () => {
@@ -109,8 +109,8 @@ describe('SYSTEM_PROMPT', () => {
     expect(SYSTEM_PROMPT).toContain('CONFIDENCE GUIDELINES');
   });
 
-  it('instructs JSON output', () => {
-    expect(SYSTEM_PROMPT).toContain('valid JSON');
+  it('instructs tool usage', () => {
+    expect(SYSTEM_PROMPT).toContain('create_action_plan');
   });
 });
 
@@ -162,8 +162,8 @@ describe('buildUserPrompt', () => {
     expect(result).not.toContain('RECENTLY USED FOLDERS');
   });
 
-  it('ends with instruction to return JSON', () => {
+  it('ends with instruction to use tool', () => {
     const result = buildUserPrompt('organize', files);
-    expect(result).toContain('Return a JSON action plan.');
+    expect(result).toContain('Use the create_action_plan tool');
   });
 });

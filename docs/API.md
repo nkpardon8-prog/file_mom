@@ -21,29 +21,35 @@ npm install @filemom/engine
 ```typescript
 import { FileMom } from '@filemom/engine';
 
-// Initialize
 const filemom = new FileMom({
   dataDir: '~/.filemom',
   watchedFolders: ['~/Documents', '~/Downloads'],
-  anthropicApiKey: process.env.ANTHROPIC_API_KEY!,
+  openRouterApiKey: process.env.OPENROUTER_API_KEY!,
 });
 
-// Initialize database and start watcher
 await filemom.initialize();
 
-// Scan and index files
+// Scan and index files (includes vision enrichment in background)
 await filemom.scan();
 
 // Generate an action plan
 const plan = await filemom.plan('organize my tax documents');
 
-// Execute the plan (after user approval)
-const result = await filemom.execute(plan);
+// Show plan to user for review...
+// User gives feedback
+const refinedPlan = await filemom.refinePlan({
+  plan,
+  feedback: 'don\'t move the receipts, only tax forms',
+  fileIndex: plan._matchedFiles,  // from the original plan call
+  history: [],
+});
+
+// Execute the refined plan (after user approval)
+const result = await filemom.execute(refinedPlan);
 
 // Undo if needed
 await filemom.undo(result.batchId);
 
-// Cleanup
 await filemom.shutdown();
 ```
 
@@ -65,7 +71,7 @@ Creates a new FileMom instance. Does not start any background processes.
 **Required config fields:**
 - `dataDir` - Directory for SQLite database and logs
 - `watchedFolders` - Array of folders to index
-- `anthropicApiKey` - Anthropic API key for Claude
+- `openRouterApiKey` - OpenRouter API key for AI models
 
 ---
 
@@ -171,6 +177,10 @@ const results = await filemom.search('invoice', {
 });
 ```
 
+**Search modes:**
+- **Keyword (default)**: FTS5 full-text search on filename, extracted text, path, and vision descriptions
+- **Semantic (when `enableEmbeddings: true`)**: Hybrid search combining FTS5 keyword scores with sqlite-vec vector cosine similarity for meaning-based matching
+
 ---
 
 #### `plan(command: string, options?: PlanOptions): Promise<ActionPlan>`
@@ -201,6 +211,52 @@ const preview = await filemom.plan('organize work files', {
 **Throws:**
 - `AIError` if Claude API fails
 - `ValidationError` if response doesn't match schema
+
+---
+
+#### `refinePlan(options: RefinePlanOptions): Promise<ActionPlan>`
+
+Refine an existing action plan based on natural language user feedback.
+
+```typescript
+interface RefinePlanOptions {
+  plan: ActionPlan;              // The current plan to refine
+  feedback: string;              // Natural language feedback
+  fileIndex: FileIndexEntry[];   // The original file context
+  history: string[];             // Previous feedback strings in this session
+}
+
+// First round of feedback
+const refined1 = await filemom.refinePlan({
+  plan: originalPlan,
+  feedback: 'don\'t move the PDFs',
+  fileIndex: matchedFiles,
+  history: [],
+});
+
+// Second round of feedback
+const refined2 = await filemom.refinePlan({
+  plan: refined1,
+  feedback: 'put the photos in ~/Pictures instead of ~/Desktop',
+  fileIndex: matchedFiles,
+  history: ['don\'t move the PDFs'],
+});
+
+// Execute the final version
+const result = await filemom.execute(refined2);
+```
+
+**Returns:** Updated `ActionPlan` incorporating the feedback
+
+**Throws:**
+- `AIError` if Claude API fails
+- `ValidationError` if refined plan doesn't match schema
+- `FileMomError` with code `MAX_REFINEMENTS_EXCEEDED` if session exceeds `maxRefinementRounds`
+
+**Notes:**
+- Maximum 3 refinement rounds per session (configurable via `maxRefinementRounds`)
+- Each call sends the current plan + all feedback history to Claude for context
+- The original file index is preserved across rounds (no re-querying)
 
 ---
 
@@ -263,6 +319,66 @@ for (const batch of batches) {
 
 ---
 
+### Smart Folder (Guided Workflow)
+
+#### `startSmartFolder(): SmartFolderSession`
+
+Start a guided "Create Folder with AI" session. Returns a session object for the multi-turn conversation.
+
+```typescript
+interface SmartFolderSample {
+  files: SearchResult[];           // 3-5 representative files
+  totalMatches: number;            // Total files matching current criteria
+  suggestedFolderName: string;     // AI-suggested folder name
+}
+
+interface SmartFolderSession {
+  /** Refine the file selection with a natural language description or feedback */
+  refine(input: string): Promise<SmartFolderSample>;
+
+  /** Confirm the current selection and generate an action plan */
+  confirm(options?: { folderName?: string; folderPath?: string }): Promise<ActionPlan>;
+
+  /** Cancel the session */
+  cancel(): void;
+}
+```
+
+**Usage:**
+
+```typescript
+// Start guided session
+const session = filemom.startSmartFolder();
+
+// First round: describe what you want
+const sample1 = await session.refine('tax documents');
+// → { files: [tax_2023.pdf, W2_acme.pdf, receipt.pdf], totalMatches: 34, suggestedFolderName: "Tax Documents" }
+
+// User says "not receipts" — refine
+const sample2 = await session.refine('yes but not receipts');
+// → { files: [tax_2023.pdf, W2_acme.pdf, 1099_freelance.pdf], totalMatches: 28, suggestedFolderName: "Tax Documents" }
+
+// User approves — generate plan
+const plan = await session.confirm({
+  folderPath: '~/Documents/Tax Documents',
+});
+
+// Execute as normal
+const result = await filemom.execute(plan);
+```
+
+**CLI equivalent:**
+
+```bash
+# Interactive guided flow
+filemom create-folder
+
+# Or with initial description
+filemom create-folder "tax documents"
+```
+
+---
+
 ### Index Management
 
 #### `getStats(): Promise<IndexStats>`
@@ -309,6 +425,56 @@ Drop and rebuild the entire index. Use with caution.
 
 ```typescript
 await filemom.rebuildIndex();
+```
+
+---
+
+### Vision Enrichment
+
+#### `enrichFiles(options?: EnrichOptions): Promise<EnrichResult>`
+
+Run vision enrichment on files that need visual understanding. Normally called automatically after scanning, but can be triggered manually.
+
+```typescript
+interface EnrichOptions {
+  paths?: string[];           // Specific files to enrich (default: all unenriched)
+  force?: boolean;            // Re-enrich already processed files
+  model?: string;              // Override default vision model (OpenRouter format)
+  onProgress?: (event: EnrichEvent) => void;
+}
+
+interface EnrichResult {
+  enriched: number;           // Files successfully enriched
+  skipped: number;            // Files that didn't need enrichment
+  failed: number;             // Files that failed enrichment
+  errors: Array<{ path: string; error: string }>;
+}
+
+type EnrichEvent =
+  | { type: 'enrich:started'; totalFiles: number }
+  | { type: 'enrich:progress'; completed: number; total: number }
+  | { type: 'enrich:file'; path: string; result: VisionResult }
+  | { type: 'enrich:error'; path: string; error: Error }
+  | { type: 'enrich:completed'; result: EnrichResult };
+
+// Manual enrichment
+const result = await filemom.enrichFiles({
+  onProgress: (event) => {
+    if (event.type === 'enrich:progress') {
+      console.log(`Enriched ${event.completed}/${event.total} files`);
+    }
+  },
+});
+
+// Enrich specific files
+await filemom.enrichFiles({ paths: ['~/Downloads/IMG_4523.jpg'] });
+
+// Force re-enrich with Sonnet for better descriptions
+await filemom.enrichFiles({
+  paths: ['~/Documents/scan.pdf'],
+  model: 'anthropic/claude-sonnet-4',
+  force: true,
+});
 ```
 
 ---
@@ -445,8 +611,8 @@ await indexer.close();
 import { AIInterface } from '@filemom/engine';
 
 const ai = new AIInterface({
-  apiKey: process.env.ANTHROPIC_API_KEY!,
-  model: 'claude-sonnet-4-20250514',
+  apiKey: process.env.OPENROUTER_API_KEY!,
+  model: 'anthropic/claude-sonnet-4',
 });
 
 const plan = await ai.generatePlan(
@@ -505,6 +671,63 @@ await log.cleanupExpired();
 
 ---
 
+### VisionEnricher
+
+```typescript
+import { VisionEnricher } from '@filemom/engine';
+
+const enricher = new VisionEnricher({
+  apiKey: process.env.OPENROUTER_API_KEY!,
+  enrichmentModel: 'anthropic/claude-haiku-4.5',
+  maxImageDimension: 1024,
+  batchSize: 50,
+});
+
+// Enrich a single file
+const result = await enricher.enrich('/path/to/IMG_4523.jpg');
+console.log(result.description);  // "Beach sunset with two people"
+console.log(result.category);     // "photo"
+console.log(result.tags);         // ["beach", "sunset", "people"]
+
+// Batch enrich (uses Batch API for 50% discount)
+const results = await enricher.enrichBatch([
+  '/path/to/IMG_4523.jpg',
+  '/path/to/screenshot.png',
+  '/path/to/scanned_doc.pdf',
+]);
+```
+
+---
+
+### Embeddings
+
+```typescript
+import { Embeddings } from '@filemom/engine';
+
+const embeddings = new Embeddings({
+  model: 'all-MiniLM-L6-v2',
+  dimensions: 384,
+  dbPath: '~/.filemom/index.db',  // Same SQLite DB as file index
+});
+
+await embeddings.initialize();  // Loads sqlite-vec extension + Transformers.js model
+
+// Generate and store embedding for a file
+await embeddings.embed(fileId, 'beach sunset photo with two people tropical setting');
+
+// Semantic search
+const results = await embeddings.search('vacation pictures', { limit: 20 });
+
+// Hybrid search (FTS5 + vector)
+const hybrid = await embeddings.hybridSearch('vacation pictures', {
+  ftsWeight: 0.4,
+  vectorWeight: 0.6,
+  limit: 20,
+});
+```
+
+---
+
 ## CLI Usage
 
 The CLI wraps the engine API for command-line usage:
@@ -525,11 +748,16 @@ filemom status
 # Search files
 filemom search "hawaii photos"
 
-# Generate action plan
+# Generate action plan (interactive — shows plan and asks for approval)
 filemom plan "organize my tax documents"
+# → Shows plan table
+# → Prompts: Approve? [y/n/feedback]
+# → Type feedback to refine: "don't move receipts"
+# → Shows updated plan
+# → Type 'y' to execute
 
-# Execute a plan (interactive confirmation)
-filemom plan "organize downloads" --execute
+# Generate plan without executing (save to file)
+filemom plan "organize downloads" --save plan.json
 
 # Execute a saved plan file
 filemom execute plan.json
@@ -550,7 +778,7 @@ filemom extract ~/photo.jpg
 filemom info ~/document.pdf
 
 # Configuration
-filemom config set model claude-haiku-4-20250514
+filemom config set model anthropic/claude-haiku-4.5
 filemom config get model
 filemom config list
 ```
@@ -603,20 +831,23 @@ The CLI reads configuration from `~/.filemom/config.json`:
     "**/node_modules/**",
     "**/.git/**"
   ],
-  "model": "claude-sonnet-4-20250514",
-  "undoTTLMinutes": 30
+  "model": "anthropic/claude-sonnet-4",
+  "undoTTLMinutes": 30,
+  "enableVisionEnrichment": true,
+  "visionModel": "anthropic/claude-haiku-4.5",
+  "maxRefinementRounds": 3
 }
 ```
 
 API key should be set via environment variable:
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
+export OPENROUTER_API_KEY=sk-or-...
 ```
 
 Or in a `.env` file in the data directory:
 
 ```
 # ~/.filemom/.env
-ANTHROPIC_API_KEY=sk-ant-...
+OPENROUTER_API_KEY=sk-or-...
 ```

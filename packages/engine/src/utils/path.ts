@@ -10,6 +10,10 @@ export function normalizePath(inputPath: string): string {
 /** Check if a file path is within a given folder */
 export function isWithinFolder(filePath: string, folderPath: string): boolean {
   const normalizedFile = normalizePath(filePath);
-  const normalizedFolder = normalizePath(folderPath);
+  let normalizedFolder = normalizePath(folderPath);
+  // Strip trailing separator to avoid double-slash
+  if (normalizedFolder.endsWith('/')) {
+    normalizedFolder = normalizedFolder.slice(0, -1);
+  }
   return normalizedFile.startsWith(normalizedFolder + '/');
 }

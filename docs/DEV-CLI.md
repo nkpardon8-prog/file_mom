@@ -53,6 +53,7 @@ Commands:
   search <query>          Search files by keyword
   info <path>             Show details for a specific file
   plan <command>          Generate action plan from natural language
+  create-folder [desc]    Guided "Create Folder with AI" flow
   execute <file>          Execute a saved action plan
   history                 Show recent operations
   undo [batch-id]         Undo an operation batch
@@ -385,6 +386,83 @@ Orientation: 1 (Normal)
 Extracted Text: (none)
 
 Embedding ID: emb_7f8a9b2c (384 dimensions)
+```
+
+---
+
+### `filemom create-folder [description]`
+
+Guided flow to create a folder and populate it with AI-selected files.
+
+```bash
+filemom create-folder [description] [options]
+
+Arguments:
+  description             Optional initial description (e.g., "tax documents")
+
+Options:
+  --path <path>           Where to create the folder (default: prompt)
+  --max-rounds <n>        Max refinement rounds (default: 5)
+  --samples <n>           Files to show per round (default: 5)
+```
+
+**Output (interactive):**
+```
+Create Folder with AI
+═════════════════════
+
+? What kind of files should go in this folder?
+› tax documents
+
+⠸ Searching index...
+  Found 34 files matching "tax documents"
+
+Here are some examples of what I'd move:
+
+ #  Name                        Path                        Size
+────────────────────────────────────────────────────────────────────
+ 1  2023_Tax_Return.pdf         ~/Documents/Taxes/          2.4 MB
+ 2  W2_2023_Acme.pdf            ~/Documents/Taxes/          145 KB
+ 3  receipt_walmart_dec.pdf     ~/Downloads/                 89 KB
+ 4  1099_2023_Freelance.pdf     ~/Documents/                234 KB
+ 5  tax_notes.docx              ~/Desktop/                  67 KB
+
+? Are these the right kind of files? (Y/n/refine)
+› no, not receipts
+
+⠸ Refining...
+  Found 28 files (excluded receipts)
+
+Updated examples:
+
+ #  Name                        Path                        Size
+────────────────────────────────────────────────────────────────────
+ 1  2023_Tax_Return.pdf         ~/Documents/Taxes/          2.4 MB
+ 2  W2_2023_Acme.pdf            ~/Documents/Taxes/          145 KB
+ 3  1099_2023_Freelance.pdf     ~/Documents/                234 KB
+ 4  tax_notes.docx              ~/Desktop/                  67 KB
+ 5  state_return_2023.pdf       ~/Documents/Taxes/          1.1 MB
+
+? Are these the right kind of files? (Y/n/refine)
+› yes
+
+Suggested folder name: Tax Documents
+? Folder name: Tax Documents
+? Create at: ~/Documents/Tax Documents
+
+Generating plan...
+✓ Plan: Move 28 files into ~/Documents/Tax Documents/
+
+? Execute? (Y/n) y
+
+Executing...
+ [1/28] Moving: 2023_Tax_Return.pdf ✓
+ [2/28] Moving: W2_2023_Acme.pdf ✓
+ ...
+ [28/28] Moving: state_return_2023.pdf ✓
+
+✓ Done! 28 files moved to ~/Documents/Tax Documents/
+  To undo: filemom undo
 ```
 
 ---

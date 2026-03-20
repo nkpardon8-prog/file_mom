@@ -99,6 +99,9 @@ describe('Component instantiation', () => {
     const watcher = new Watcher({
       watchedFolders: ['/tmp'],
       debounceMs: 100,
+      excludePatterns: [],
+      followSymlinks: false,
+      includeHidden: false,
     });
     expect(watcher).toBeInstanceOf(Watcher);
   });
@@ -133,7 +136,8 @@ describe('Component instantiation', () => {
   it('Embeddings can be constructed', () => {
     const emb = new Embeddings({
       model: 'all-MiniLM-L6-v2',
-      lanceDbPath: '/tmp/lance',
+      dimensions: 384,
+      dbPath: '/tmp/test-embeddings.db',
     });
     expect(emb).toBeInstanceOf(Embeddings);
   });
@@ -144,7 +148,7 @@ describe('Config → Validate → Use roundtrip', () => {
     const raw = {
       dataDir: '/tmp/filemom',
       watchedFolders: ['/Users/test/Documents'],
-      anthropicApiKey: 'sk-ant-test',
+      openRouterApiKey: 'sk-or-test',
     };
     const config = ConfigSchema.parse(raw);
 
@@ -157,10 +161,13 @@ describe('Config → Validate → Use roundtrip', () => {
     expect(scanner).toBeInstanceOf(Scanner);
 
     const ai = new AIInterface({
-      apiKey: config.anthropicApiKey,
+      apiKey: config.openRouterApiKey,
       model: config.model,
       maxFilesPerRequest: config.maxFilesPerRequest,
       requestTimeoutMs: config.requestTimeoutMs,
+      retryAttempts: config.retryAttempts,
+      retryDelayMs: config.retryDelayMs,
+      maxRefinementRounds: config.maxRefinementRounds,
     });
     expect(ai).toBeInstanceOf(AIInterface);
   });

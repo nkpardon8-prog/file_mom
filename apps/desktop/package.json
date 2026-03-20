@@ -1,0 +1,16 @@
+{
+  "name": "@filemom/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/main.ts",
+  "scripts": {
+    "dev": "electron src/main.ts"
+  },
+  "dependencies": {
+    "electron": "^36.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0"
+  }
+}
